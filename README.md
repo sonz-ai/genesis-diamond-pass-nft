@@ -1,12 +1,12 @@
-# Telemafia Diamond Genesis Pass NFT
+# Sonzai Diamond Genesis Pass NFT
 
-This repository contains the smart contract for the Telemafia Diamond Genesis Pass NFT, an ERC721C-compliant NFT with royalties and whitelist functionality.
+This repository contains the smart contract for the Sonzai Diamond Genesis Pass NFT, an ERC721C-compliant NFT with royalties and whitelist functionality.
 
 ## Features
 
 - ERC721C-compliant NFT with creator royalties
 - 11% royalty on secondary sales
-- Whitelist functionality using Chainlink Functions to verify addresses against a Supabase database
+- Whitelist functionality using Chainlink Functions to verify addresses against a backend API
 - Public mint functionality
 - Mint price of 0.28 ETH
 - Owner-only batch minting for team allocations
@@ -14,21 +14,21 @@ This repository contains the smart contract for the Telemafia Diamond Genesis Pa
 
 ## Contract Overview
 
-The `TelemafiaGenesisPass` contract is a production-ready implementation of an ERC721C NFT with the following features:
+The `SonzaiGenesisPass` contract is a production-ready implementation of an ERC721C NFT with the following features:
 
-- **Whitelist Minting**: Uses Chainlink Functions to verify if an address is whitelisted by checking against a Supabase database
+- **Whitelist Minting**: Uses Chainlink Functions to verify if an address is whitelisted by checking against the backend.sonz.ai API
 - **Public Minting**: Allows anyone to mint tokens during the public sale phase
 - **Royalties**: Implements ERC2981 for royalty information, with a fixed 11% royalty
 - **Owner Controls**: Includes functions for the owner to manage the contract, including toggling mint phases and withdrawing funds
 
 ## Chainlink Functions Integration
 
-This contract uses Chainlink Functions to verify whitelist status by querying a Supabase database. Here's how it works:
+This contract uses Chainlink Functions to verify whitelist status by querying the backend.sonz.ai API. Here's how it works:
 
 1. A user calls `requestWhitelistVerification()` to initiate the verification process
 2. The contract sends a request to Chainlink Functions with JavaScript code that:
    - Takes the user's address as input
-   - Makes an HTTP request to the Supabase API to check if the address is in the whitelist table
+   - Makes an HTTP request to the backend.sonz.ai API to check if the address is whitelisted
    - Returns the result (1 for whitelisted, 0 for not whitelisted)
 3. Chainlink Functions executes the JavaScript code off-chain and returns the result
 4. The contract's `fulfillRequest()` function processes the response and updates the user's whitelist status
@@ -38,7 +38,7 @@ This approach offers several advantages over traditional Merkle tree verificatio
 - Whitelist can be updated dynamically without changing the contract
 - No need to generate and distribute Merkle proofs to users
 - Can implement more complex whitelist logic (e.g., tiered whitelists, time-based restrictions)
-- Integrates with existing database systems
+- Integrates with existing backend systems
 
 ## Development
 
@@ -60,6 +60,7 @@ This project uses [Foundry](https://book.getfoundry.sh/) for development, testin
 2. Install dependencies:
    ```bash
    forge install
+   npm install
    ```
 
 3. Build the project:
@@ -76,42 +77,54 @@ This project uses [Foundry](https://book.getfoundry.sh/) for development, testin
 
 To deploy the contract to a network, you'll need to:
 
-1. Set up your environment variables:
+1. Create a `.env` file from the example:
    ```bash
-   export PRIVATE_KEY=your_private_key
-   export RPC_URL=your_rpc_url
+   cp .env.example .env
    ```
 
-2. Set up the whitelist verification system:
+2. Edit the `.env` file with your specific values:
+   ```
+   # Deployment
+   PRIVATE_KEY=your_wallet_private_key_here
+
+   # Chainlink Functions
+   CHAINLINK_SUBSCRIPTION_ID=your_subscription_id_here
+   CHAINLINK_DON_ID=your_don_id_here
+   CHAINLINK_ROUTER_ADDRESS=your_router_address_here
+
+   # API Keys
+   SONZAI_API_KEY=your_api_key_here
+
+   # Contract Settings
+   ROYALTY_RECEIVER_ADDRESS=your_royalty_receiver_address_here
+   BASE_URI=https://api.sonzai.io/metadata/
+   CALLBACK_GAS_LIMIT=300000
+   ```
+
+3. Set up the whitelist verification system:
    ```bash
-   # Install dependencies
-   npm install
-   
-   # Run the setup script
    npm run setup-whitelist
    ```
    
    This script will guide you through:
-   - Setting up a Supabase database for whitelist verification
-   - Adding addresses to the whitelist
+   - Setting up API key authentication for the backend.sonz.ai service
    - Setting up Chainlink Functions for on-chain verification
    
    The script will provide you with all the necessary information to configure your deployment.
 
-4. Update the deployment script (`script/DeployTelemafiaGenesisPass.s.sol`) with your desired parameters:
-   - Set the `royaltyReceiver` address to receive royalties
-   - Set the `baseURI` for your token metadata
-   - Set the `router` address for Chainlink Functions
-   - Set the `donId` for Chainlink Functions
-   - Set the `subscriptionId` for Chainlink Functions
-   - Set the `callbackGasLimit` for Chainlink Functions
-   - Set the `supabaseUrl` for your Supabase project
-   - Set the `supabaseKey` (this will be encrypted separately)
-
-5. Deploy the contract:
+4. Deploy the contract:
    ```bash
-   forge script script/DeployTelemafiaGenesisPass.s.sol:DeployTelemafiaGenesisPass --rpc-url $RPC_URL --broadcast --verify
+   forge script script/DeploySonzaiGenesisPass.s.sol:DeploySonzaiGenesisPass --rpc-url $RPC_URL --broadcast --verify
    ```
+
+   The deployment script will automatically use the values from your `.env` file. For any values not provided in the `.env` file, it will use default values.
+
+## Security Considerations
+
+- The `.env` file contains sensitive information and is excluded from git via `.gitignore`
+- Never commit your private keys or API keys to the repository
+- The deployment script loads sensitive values from environment variables rather than hardcoding them
+- The API key for backend authentication is set up separately in the Chainlink Functions UI for additional security
 
 ## Contract Interaction
 
@@ -119,7 +132,7 @@ After deployment, you can interact with the contract using the following functio
 
 ### For Users
 
-- `requestWhitelistVerification()`: Request verification of your address against the whitelist database
+- `requestWhitelistVerification()`: Request verification of your address against the whitelist API
 - `whitelistMint()`: Mint a token during the whitelist phase (after verification)
 - `publicMint()`: Mint a token during the public phase
 - `burn(uint256 tokenId)`: Burn a token you own
