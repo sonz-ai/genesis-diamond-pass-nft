@@ -1,7 +1,7 @@
 {
-  "name": "telemafia-genesis-pass",
+  "name": "sonzai-genesis-pass",
   "version": "1.0.0",
-  "description": "Telemafia Diamond Genesis Pass NFT",
+  "description": "Sonzai Diamond Genesis Pass NFT",
   "scripts": {
     "generate-merkle-root": "node script/GenerateMerkleRoot.js",
     "setup-whitelist": "node script/SetupWhitelist.js",
@@ -9,7 +9,7 @@
     "build": "forge build"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.0",
+    "axios": "^1.6.2",
     "ethers": "^5.7.2",
     "keccak256": "^1.0.6",
     "merkletreejs": "^0.3.10"
