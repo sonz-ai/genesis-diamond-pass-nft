@@ -1,0 +1,17 @@
+{
+  "name": "telemafia-genesis-pass",
+  "version": "1.0.0",
+  "description": "Telemafia Diamond Genesis Pass NFT",
+  "scripts": {
+    "generate-merkle-root": "node script/GenerateMerkleRoot.js",
+    "setup-whitelist": "node script/SetupWhitelist.js",
+    "test": "forge test",
+    "build": "forge build"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "ethers": "^5.7.2",
+    "keccak256": "^1.0.6",
+    "merkletreejs": "^0.3.10"
+  }
+}

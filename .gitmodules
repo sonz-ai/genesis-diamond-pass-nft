@@ -13,3 +13,9 @@
 [submodule "lib/creator-token-standards"]
 	path = lib/creator-token-standards
 	url = https://github.com/limitbreakinc/creator-token-standards
+[submodule "lib/chainlink-brownie-contracts"]
+	path = lib/chainlink-brownie-contracts
+	url = https://github.com/smartcontractkit/chainlink-brownie-contracts
+[submodule "lib/functions-hardhat-starter-kit"]
+	path = lib/functions-hardhat-starter-kit
+	url = https://github.com/smartcontractkit/functions-hardhat-starter-kit
