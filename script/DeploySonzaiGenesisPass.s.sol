@@ -12,27 +12,42 @@ contract DeploySonzaiGenesisPass is Script {
         // Start broadcasting transactions
         vm.startBroadcast(deployerPrivateKey);
         
-        // Deploy the contract with constructor parameters
-        // 1. Royalty receiver address (replace with actual address)
-        address royaltyReceiver = address(0x123); // Replace with actual address
+        // Load environment variables for constructor parameters
+        // 1. Royalty receiver address (use default if not set)
+        address royaltyReceiver;
+        try vm.envAddress("ROYALTY_RECEIVER_ADDRESS") {
+            royaltyReceiver = vm.envAddress("ROYALTY_RECEIVER_ADDRESS");
+        } catch {
+            royaltyReceiver = address(0x123); // Default value
+        }
         
-        // 2. Base URI for token metadata
-        string memory baseURI = "https://api.sonzai.io/metadata/";
+        // 2. Base URI for token metadata (use default if not set)
+        string memory baseURI;
+        try vm.envString("BASE_URI") {
+            baseURI = vm.envString("BASE_URI");
+        } catch {
+            baseURI = "https://api.sonzai.io/metadata/"; // Default value
+        }
         
-        // 3. Chainlink Functions router address (replace with actual address for the network)
-        address router = address(0x456); // Replace with actual Chainlink Functions router address
+        // 3. Chainlink Functions router address
+        address router = vm.envAddress("CHAINLINK_ROUTER_ADDRESS");
         
-        // 4. Chainlink Functions DON ID (replace with actual DON ID)
-        bytes32 donId = bytes32(0);
+        // 4. Chainlink Functions DON ID
+        bytes32 donId = vm.envBytes32("CHAINLINK_DON_ID");
         
-        // 5. Chainlink Functions subscription ID (replace with actual subscription ID)
-        uint64 subscriptionId = 1; // Replace with actual subscription ID
+        // 5. Chainlink Functions subscription ID
+        uint64 subscriptionId = uint64(vm.envUint("CHAINLINK_SUBSCRIPTION_ID"));
         
-        // 6. Callback gas limit for Chainlink Functions
-        uint32 callbackGasLimit = 300000; // Adjust as needed
+        // 6. Callback gas limit for Chainlink Functions (use default if not set)
+        uint32 callbackGasLimit;
+        try vm.envUint("CALLBACK_GAS_LIMIT") {
+            callbackGasLimit = uint32(vm.envUint("CALLBACK_GAS_LIMIT"));
+        } catch {
+            callbackGasLimit = 300000; // Default value
+        }
         
-        // 7. API key for backend authentication
-        string memory apiKey = ""; // This will be set up separately in the Chainlink Functions UI
+        // 7. API key for backend authentication (will be set up in Chainlink Functions UI)
+        string memory apiKey = ""; // Not stored in .env for security reasons
         
         // Deploy the contract
         SonzaiGenesisPass genesisPass = new SonzaiGenesisPass(
