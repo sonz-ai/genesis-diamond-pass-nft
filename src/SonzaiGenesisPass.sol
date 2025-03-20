@@ -45,6 +45,7 @@ contract SonzaiGenesisPass is OwnableBasic, ERC721C, BasicRoyalties, ReentrancyG
     uint64 public subscriptionId; // Chainlink Functions subscription ID
     uint32 public callbackGasLimit; // Gas limit for the callback function
     string public apiKey; // API key for backend authentication
+    string public encryptedSecretsReference; // Reference to encrypted secrets for Chainlink Functions
     
     // Mapping to track pending whitelist verification requests
     mapping(bytes32 => address) public pendingRequests;
@@ -60,6 +61,7 @@ contract SonzaiGenesisPass is OwnableBasic, ERC721C, BasicRoyalties, ReentrancyG
      * @param _subscriptionId Chainlink Functions subscription ID
      * @param _callbackGasLimit Gas limit for the callback function
      * @param _apiKey API key for backend authentication
+     * @param _encryptedSecretsReference Reference to encrypted secrets for Chainlink Functions
      */
     constructor(
         address royaltyReceiver,
@@ -68,7 +70,8 @@ contract SonzaiGenesisPass is OwnableBasic, ERC721C, BasicRoyalties, ReentrancyG
         bytes32 _donId,
         uint64 _subscriptionId,
         uint32 _callbackGasLimit,
-        string memory _apiKey
+        string memory _apiKey,
+        string memory _encryptedSecretsReference
     ) 
         ERC721OpenZeppelin("Sonzai Diamond Genesis Pass", "SDGP") 
         BasicRoyalties(royaltyReceiver, uint96(ROYALTY_PERCENTAGE))
@@ -79,6 +82,7 @@ contract SonzaiGenesisPass is OwnableBasic, ERC721C, BasicRoyalties, ReentrancyG
         subscriptionId = _subscriptionId;
         callbackGasLimit = _callbackGasLimit;
         apiKey = _apiKey;
+        encryptedSecretsReference = _encryptedSecretsReference;
         isWhitelistMintEnabled = true;
         isPublicMintEnabled = false;
     }
@@ -96,10 +100,22 @@ contract SonzaiGenesisPass is OwnableBasic, ERC721C, BasicRoyalties, ReentrancyG
         string memory source = string(abi.encodePacked(
             "const address = args[0];",
             "const apiKey = secrets.apiKey;",
+            "// First, get a CSRF token - this endpoint is public and doesn't need authentication",
+            "const csrfResponse = await Functions.makeHttpRequest({",
+            "  url: 'https://backend.sonz.ai/api/v1/csrf-token',",
+            "  method: 'GET'",
+            "});",
+            "if (csrfResponse.error) {",
+            "  throw Error('Failed to get CSRF token');",
+            "}",
+            "// Extract the CSRF token from the response",
+            "const csrfToken = csrfResponse.data.csrf_token;",
+            "// Make the actual whitelist verification request with the CSRF token",
             "const response = await Functions.makeHttpRequest({",
-            "  url: `https://backend.sonz.ai/whitelist/${address}`,",
+            "  url: `https://backend.sonz.ai/api/v1/whitelist/${address}`,",
             "  headers: {",
-            "    'Authorization': `Bearer ${apiKey}`,",
+            "    'X-API-Key': apiKey,",
+            "    'X-CSRF-Token': csrfToken,",
             "    'Content-Type': 'application/json'",
             "  }",
             "});",
@@ -120,7 +136,7 @@ contract SonzaiGenesisPass is OwnableBasic, ERC721C, BasicRoyalties, ReentrancyG
         
         // Set secrets
         req.secretsLocation = FunctionsRequest.Location.Remote;
-        // Note: encryptedSecretsReference would be provided during deployment
+        req.encryptedSecretsReference = encryptedSecretsReference;
         
         // Set arguments
         string[] memory args = new string[](1);

@@ -17,6 +17,7 @@ contract SonzaiGenesisPassTest is Test {
     uint64 public subscriptionId = 1;
     uint32 public callbackGasLimit = 300000;
     string public apiKey = "test-api-key";
+    string public encryptedSecretsReference = "test-secrets-reference";
     
     // Mock request IDs for Chainlink Functions
     bytes32 public user1RequestId = bytes32(uint256(100));
@@ -34,7 +35,8 @@ contract SonzaiGenesisPassTest is Test {
             donId,
             subscriptionId,
             callbackGasLimit,
-            apiKey
+            apiKey,
+            encryptedSecretsReference
         );
         
         vm.stopPrank();

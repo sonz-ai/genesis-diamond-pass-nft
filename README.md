@@ -28,7 +28,8 @@ This contract uses Chainlink Functions to verify whitelist status by querying th
 1. A user calls `requestWhitelistVerification()` to initiate the verification process
 2. The contract sends a request to Chainlink Functions with JavaScript code that:
    - Takes the user's address as input
-   - Makes an HTTP request to the backend.sonz.ai API to check if the address is whitelisted
+   - Makes an HTTP request to get a CSRF token from the backend.sonz.ai API
+   - Makes another HTTP request to check if the address is whitelisted, including the CSRF token
    - Returns the result (1 for whitelisted, 0 for not whitelisted)
 3. Chainlink Functions executes the JavaScript code off-chain and returns the result
 4. The contract's `fulfillRequest()` function processes the response and updates the user's whitelist status
@@ -75,7 +76,26 @@ This project uses [Foundry](https://book.getfoundry.sh/) for development, testin
 
 ## Deployment
 
-To deploy the contract to a network, you'll need to:
+To deploy the contract to a network, follow these steps:
+
+### Step 1: Set Up Chainlink Functions
+
+1. Create a Chainlink Functions subscription:
+   - Go to [functions.chain.link](https://functions.chain.link/)
+   - Connect your wallet
+   - Navigate to "Subscriptions" and click "Create Subscription"
+   - Fund your subscription with LINK tokens (at least 5-10 LINK)
+   - Note your Subscription ID
+
+2. Get the DON ID and Router Address:
+   - For Ethereum Mainnet:
+     - Router: 0x65Dcc24F8ff9e51F10DCc7Ed1e4e2A61e6E14bd6
+     - DON ID: 0x66756e2d657468657265756d2d6d61696e6e65742d31000000000000000000
+   - For Sepolia Testnet:
+     - Router: 0xb83E47C2bC239B3bf370bc41e1459A34b41238D0
+     - DON ID: 0x66756e2d657468657265756d2d7365706f6c69612d3100000000000000000000
+
+### Step 2: Configure Environment Variables
 
 1. Create a `.env` file from the example:
    ```bash
@@ -91,9 +111,11 @@ To deploy the contract to a network, you'll need to:
    CHAINLINK_SUBSCRIPTION_ID=your_subscription_id_here
    CHAINLINK_DON_ID=your_don_id_here
    CHAINLINK_ROUTER_ADDRESS=your_router_address_here
+   ENCRYPTED_SECRETS_REFERENCE=your_encrypted_secrets_reference_here
 
    # API Keys
    SONZAI_API_KEY=your_api_key_here
+   SONZAI_CSRF_SECRET=your_csrf_secret_here
 
    # Contract Settings
    ROYALTY_RECEIVER_ADDRESS=your_royalty_receiver_address_here
@@ -101,23 +123,68 @@ To deploy the contract to a network, you'll need to:
    CALLBACK_GAS_LIMIT=300000
    ```
 
-3. Set up the whitelist verification system:
-   ```bash
-   npm run setup-whitelist
-   ```
-   
-   This script will guide you through:
-   - Setting up API key authentication for the backend.sonz.ai service
-   - Setting up Chainlink Functions for on-chain verification
-   
-   The script will provide you with all the necessary information to configure your deployment.
+### Step 3: Set Up Whitelist Verification
 
-4. Deploy the contract:
-   ```bash
-   forge script script/DeploySonzaiGenesisPass.s.sol:DeploySonzaiGenesisPass --rpc-url $RPC_URL --broadcast --verify
-   ```
+Run the whitelist setup script:
+```bash
+npm run setup-whitelist
+```
 
-   The deployment script will automatically use the values from your `.env` file. For any values not provided in the `.env` file, it will use default values.
+This script will guide you through:
+- Setting up API key authentication for the backend.sonz.ai service
+- Configuring Chainlink Functions parameters
+- Testing the API connection
+- Updating your environment variables
+
+### Step 4: Set Up Chainlink Functions Secrets
+
+Run the Chainlink Functions secrets setup script:
+```bash
+npm run setup-chainlink-secrets
+```
+
+This script will:
+- Create a secrets.json file with your API key
+- Encrypt the secrets using the Chainlink Functions CLI
+- Generate the encrypted secrets file and DON public key
+- Provide instructions for uploading your secrets to the Chainlink Functions UI
+
+After running the script:
+1. Upload your encrypted secrets to the Chainlink Functions UI
+2. Note the encrypted secrets reference (gist ID)
+3. Add this reference to your .env file as ENCRYPTED_SECRETS_REFERENCE
+
+### Step 5: Deploy the Contract
+
+Deploy the contract using Foundry:
+```bash
+forge script script/DeploySonzaiGenesisPass.s.sol:DeploySonzaiGenesisPass --rpc-url $RPC_URL --broadcast --verify
+```
+
+The deployment script will automatically use the values from your `.env` file. For any values not provided in the `.env` file, it will use default values.
+
+### Step 6: Add Contract as Consumer
+
+After deployment:
+1. Go to the Chainlink Functions UI
+2. Find your subscription
+3. Add your contract address as a consumer
+4. This allows your contract to use your Chainlink Functions subscription
+
+### Step 7: Transfer Ownership to Gnosis Safe (Optional)
+
+If you want to transfer ownership to a Gnosis Safe multisig:
+```bash
+npm run transfer-ownership
+```
+
+This script will:
+- Connect to your deployed contract
+- Transfer ownership to your Gnosis Safe multisig
+- Optionally update the royalty receiver to the Safe as well
+- Verify the ownership transfer was successful
+
+All mint proceeds (0.28 ETH per mint) and royalties (11% of secondary sales) will then go to the Gnosis Safe.
 
 ## Security Considerations
 
@@ -125,6 +192,64 @@ To deploy the contract to a network, you'll need to:
 - Never commit your private keys or API keys to the repository
 - The deployment script loads sensitive values from environment variables rather than hardcoding them
 - The API key for backend authentication is set up separately in the Chainlink Functions UI for additional security
+- CSRF protection is implemented for all API calls to the backend.sonz.ai service to prevent cross-site request forgery attacks
+
+## Chainlink Functions Details
+
+### CSRF Protection
+
+The backend.sonz.ai API uses CSRF (Cross-Site Request Forgery) protection to secure its endpoints. This requires:
+
+1. Obtaining a CSRF token from the server before making API requests
+2. Including this token in the headers of subsequent requests
+
+The Chainlink Functions implementation handles this automatically by:
+- First making a request to `https://backend.sonz.ai/api/v1/csrf-token` to get a CSRF token (this endpoint is public and doesn't require authentication)
+- Then including this token in the `X-CSRF-Token` header when making the whitelist verification request
+
+Example of how the CSRF flow works in JavaScript:
+
+```javascript
+// Step 1: Get a CSRF token (public endpoint, no authentication needed)
+fetch('https://backend.sonz.ai/api/v1/csrf-token')
+  .then(response => response.json())
+  .then(data => {
+    // Store the token for future requests
+    const csrfToken = data.csrf_token;
+    
+    // Step 2: Use the token for authenticated requests
+    fetch('https://backend.sonz.ai/api/v1/whitelist/0x123...', {
+      method: 'GET',
+      headers: {
+        'X-API-Key': 'your-api-key',
+        'X-CSRF-Token': csrfToken,
+        'Content-Type': 'application/json'
+      }
+    });
+  });
+```
+
+### Secrets Management
+
+Chainlink Functions requires secure management of API keys and other secrets:
+
+1. Secrets are stored in a JSON file and encrypted using the Chainlink Functions CLI
+2. The encrypted secrets are uploaded to the Chainlink Functions DON (Decentralized Oracle Network)
+3. The contract references these secrets using the encrypted secrets reference (gist ID)
+4. When the Chainlink Functions request is executed, the DON decrypts the secrets and uses them to make the API request
+
+This approach ensures that sensitive information like API keys is never stored on-chain.
+
+### JavaScript Source Code
+
+The JavaScript code executed by Chainlink Functions:
+1. Takes the user's address as input
+2. Retrieves the API key from the encrypted secrets
+3. Makes an HTTP request to get a CSRF token
+4. Makes another HTTP request to check if the address is whitelisted
+5. Returns 1 if the address is whitelisted, 0 if not
+
+This code is stored on-chain in the `requestWhitelistVerification()` function.
 
 ## Contract Interaction
 

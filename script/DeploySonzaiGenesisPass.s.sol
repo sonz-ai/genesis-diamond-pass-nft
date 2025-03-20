@@ -49,6 +49,15 @@ contract DeploySonzaiGenesisPass is Script {
         // 7. API key for backend authentication (will be set up in Chainlink Functions UI)
         string memory apiKey = ""; // Not stored in .env for security reasons
         
+        // 8. Encrypted secrets reference for Chainlink Functions
+        string memory encryptedSecretsReference;
+        try vm.envString("ENCRYPTED_SECRETS_REFERENCE") {
+            encryptedSecretsReference = vm.envString("ENCRYPTED_SECRETS_REFERENCE");
+        } catch {
+            encryptedSecretsReference = ""; // Default empty value
+            console.log("Warning: No encrypted secrets reference provided. Make sure to set it up in Chainlink Functions UI.");
+        }
+        
         // Deploy the contract
         SonzaiGenesisPass genesisPass = new SonzaiGenesisPass(
             royaltyReceiver,
@@ -57,7 +66,8 @@ contract DeploySonzaiGenesisPass is Script {
             donId,
             subscriptionId,
             callbackGasLimit,
-            apiKey
+            apiKey,
+            encryptedSecretsReference
         );
         
         // End broadcasting transactions

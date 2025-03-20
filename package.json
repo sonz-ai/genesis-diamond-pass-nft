@@ -5,6 +5,8 @@
   "scripts": {
     "generate-merkle-root": "node script/GenerateMerkleRoot.js",
     "setup-whitelist": "node script/SetupWhitelist.js",
+    "setup-chainlink-secrets": "node script/SetupChainlinkSecrets.js",
+    "transfer-ownership": "node script/TransferOwnership.js",
     "test": "forge test",
     "build": "forge build"
   },
