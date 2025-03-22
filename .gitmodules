@@ -12,7 +12,7 @@
 	url = https://github.com/dmfxyz/murky
 [submodule "lib/creator-token-standards"]
 	path = lib/creator-token-standards
-	url = https://github.com/limitbreakinc/creator-token-standards
+	url = https://github.com/limitbreak/creator-token-standards
 [submodule "lib/chainlink-brownie-contracts"]
 	path = lib/chainlink-brownie-contracts
 	url = https://github.com/smartcontractkit/chainlink-brownie-contracts

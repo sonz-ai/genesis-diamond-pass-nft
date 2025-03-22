@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@limitbreak/creator-token-standards/src/access/OwnableBasic.sol";
-import "@limitbreak/creator-token-standards/src/erc721c/ERC721C.sol";
-import "@limitbreak/creator-token-standards/src/programmable-royalties/BasicRoyalties.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Strings.sol";
+import "limitbreak/creator-token-standards/src/access/OwnableBasic.sol";
+import "limitbreak/creator-token-standards/src/erc721c/ERC721C.sol";
+import "limitbreak/creator-token-standards/src/programmable-royalties/BasicRoyalties.sol";
+import "openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "openzeppelin/contracts/utils/Strings.sol";
 import "@chainlink/v0.8/functions/v1_0_0/FunctionsClient.sol";
 import "@chainlink/v0.8/functions/v1_0_0/libraries/FunctionsRequest.sol";
 
