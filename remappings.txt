@@ -1,8 +1,7 @@
-@limitbreak/creator-token-standards/=lib/creator-token-standards/
 @openzeppelin/=lib/openzeppelin-contracts/
 ds-test/=lib/forge-std/lib/ds-test/src/
 forge-std/=lib/forge-std/src/
 murky/=lib/murky/src
 erc721a/=lib/ERC721A/
-@chainlink/=lib/chainlink-brownie-contracts/contracts/src/
-@chainlink-functions/=lib/functions-hardhat-starter-kit/contracts/
+@limitbreak/permit-c/=lib/PermitC/src/
+@opensea/tstorish/=lib/tstorish/src/
