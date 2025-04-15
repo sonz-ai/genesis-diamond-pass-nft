@@ -11,6 +11,7 @@
     "build": "forge build"
   },
   "dependencies": {
+    "@limitbreak/creator-token-standards": "^4.0.1",
     "axios": "^1.6.2",
     "ethers": "^5.7.2",
     "keccak256": "^1.0.6",
