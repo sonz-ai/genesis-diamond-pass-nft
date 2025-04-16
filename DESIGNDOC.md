@@ -115,7 +115,146 @@ We address this using a three-contract system with a refined access control mode
 *   **Oracle Implementation:** A Chainlink oracle adapter that connects the off-chain price discovery service to the on-chain distributor contract.
 *   **Administrative Dashboard:** A UI for the contract owner to monitor transfers, add/remove service accounts, and manage the distribution system.
 
-**8. Future Considerations / Potential Improvements**
+**8. Royalty Collection Process**
+
+The royalty collection system combines on-chain and off-chain components to ensure accurate tracking and distribution of royalties:
+
+*   **Marketplace Royalty Flow:**
+    *   When a DiamondGenesisPass NFT is sold on a marketplace supporting IERC2981, the marketplace calls `royaltyInfo` and sends the royalty amount to the CentralizedRoyaltyDistributor.
+    *   The distributor's `receive()` function captures these payments and adds them to the collection's royalty pool.
+
+*   **Transaction Tracking:**
+    *   The contract emits a `TransferEvent(uint256 indexed tokenId, address from, address to, uint256 timestamp)` whenever a token changes ownership.
+    *   The contract tracks key data per tokenId using the following structure:
+        ```solidity
+        struct TokenRoyaltyData {
+            address minter;               // Original minter address
+            address currentOwner;         // Current owner address
+            uint256 transactionCount;     // Number of times the token has been traded
+            uint256 totalVolume;          // Cumulative trading volume
+            uint256 lastSyncedBlock;      // Latest block height when royalty data was updated
+            uint256 minterRoyaltyEarned;  // Total royalties earned by minter
+            uint256 minterRoyaltyPaid;    // Total royalties withdrawn by minter
+            uint256 creatorRoyaltyEarned; // Total royalties earned by creator for this token
+            uint256 creatorRoyaltyPaid;   // Total royalties withdrawn by creator for this token
+            mapping(bytes32 => bool) processedTransactions; // Hash map to prevent duplicate processing
+        }
+        ```
+    *   The contract also maintains collection-level data:
+        ```solidity
+        struct CollectionRoyaltyData {
+            uint256 totalVolume;          // Total volume across all tokens
+            uint256 lastSyncedBlock;      // Latest sync block for the collection
+            uint256 totalRoyaltyCollected; // Total royalties received
+            uint256 totalRoyaltyDistributed; // Total royalties paid out
+        }
+        ```
+
+*   **Royalty Synchronization Process:**
+    *   Each transfer emits an event that is monitored by an off-chain processor.
+    *   The processor queries the blockchain for `TransferEvent` events after the `lastSyncedBlock` height.
+    *   For each identified transfer, the processor:
+        1. Determines the sale price from marketplace APIs (OpenSea, LooksRare, etc.)
+        2. Calculates the royalty amounts based on configured splits (e.g., 20% minter, 80% creator)
+        3. Computes the new cumulative volume and royalties
+    *   The processor then calls a restricted batch update function:
+        ```solidity
+        function batchUpdateRoyaltyData(
+            address collection,
+            uint256[] calldata tokenIds,
+            uint256[] calldata salePrices,
+            uint256[] calldata transactionTimestamps,
+            bytes32[] calldata transactionHashes
+        ) external onlyRole(SERVICE_ACCOUNT_ROLE)
+        ```
+    *   This function:
+        1. Verifies the caller has SERVICE_ACCOUNT_ROLE or is the owner
+        2. For each tokenId in the batch:
+           - Verifies the transaction hash hasn't been processed before
+           - Updates the token's transaction count, volume, and royalty data
+           - Marks the transaction hash as processed
+        3. Updates the lastSyncedBlock to the current block
+        4. Emits a `RoyaltyDataUpdated(address collection, uint256[] tokenIds)` event
+
+*   **Withdrawal Process:**
+    *   After royalty data is updated, users can interact with the system:
+        *   Minters can view their earned royalties through a view function:
+           ```solidity
+           function getMinterRoyaltyInfo(address minter) external view returns (
+               uint256 totalEarned,
+               uint256 totalWithdrawn,
+               uint256 currentlyClaimable,
+               uint256[] memory tokenIds
+           )
+           ```
+        *   Minters can claim through these functions:
+           ```solidity
+           function claimMinterRoyalties(uint256 tokenId) external
+           function claimAllMinterRoyalties() external
+           ```
+        *   The creator can check and claim their royalties:
+           ```solidity
+           function getCreatorRoyaltyInfo() external view returns (
+               uint256 totalEarned,
+               uint256 totalWithdrawn,
+               uint256 currentlyClaimable
+           )
+           function claimCreatorRoyalties() external
+           ```
+    *   Each claim function:
+        1. Calculates the claimable amount (accumulated minus already withdrawn)
+        2. Updates the withdrawn amount tracking
+        3. Transfers the funds to the appropriate recipient
+        4. Emits a `RoyaltyClaimed(address recipient, uint256 amount)` event
+
+*   **Oracle-Based Synchronization (Alternative/Backup):**
+    *   Any user can trigger royalty data updates through the public oracle function:
+       ```solidity
+       function updateRoyaltyDataViaOracle() external
+       ```
+    *   This function:
+        1. Calls a Chainlink oracle using the following parameters:
+           ```solidity
+           Request memory req = buildChainlinkRequest(
+               jobId,
+               address(this),
+               this.fulfillRoyaltyData.selector
+           );
+           req.add("collection", addressToString(address(this)));
+           req.add("fromBlock", uint256ToString(lastSyncedBlock));
+           return sendOperatorRequest(req, fee);
+           ```
+        2. The oracle calls an API endpoint like: `https://api.royalty-tracker.com/collection/{collection}/transactions?fromBlock={fromBlock}`
+        3. The API response includes all token transfers and verified sale prices
+        4. The Chainlink callback function `fulfillRoyaltyData` processes this data on-chain:
+           ```solidity
+           function fulfillRoyaltyData(
+               bytes32 _requestId,
+               uint256[] memory tokenIds,
+               uint256[] memory salePrices,
+               bytes32[] memory transactionHashes
+           ) external recordChainlinkFulfillment(_requestId)
+           ```
+        5. This function updates the royalty data in the same way as the service account's batch update function
+
+*   **Anti-Duplication Safeguards:**
+    *   To prevent duplicate royalty calculations, the system implements several layers of protection:
+        1. Each transaction hash is stored in a mapping (`processedTransactions`) with boolean values
+        2. Before processing any sale, the contract checks: `require(!tokenData.processedTransactions[txHash], "Transaction already processed");`
+        3. The off-chain processor tracks the last processed block height and only queries for newer events
+        4. The system includes a reconciliation process that can be triggered by the service account to verify and fix any discrepancies
+
+*   **User Interface for Royalty Tracking:**
+    *   A dedicated dashboard will be provided for minters and the creator to:
+        1. View their current claimable royalties across all tokens they've minted
+        2. See historical royalty payments
+        3. Track the trading activity of their tokens
+        4. Initiate royalty claims
+        5. Verify the last synchronized block and ensure their royalty data is up-to-date
+
+This hybrid approach combines the efficiency of centralized off-chain processing with the security of on-chain verification, ensuring minters and the creator can reliably claim their earned royalties while maintaining reasonable gas costs.
+
+**9. Future Considerations / Potential Improvements**
 
 *   **Marketplace Integration:** Explore direct integrations with major marketplaces via their APIs to automate price discovery.
 *   **Gas Optimization:** Optimize batch operations like `batchUpdateSalePrices` to handle larger sets of transactions while minimizing gas costs.
