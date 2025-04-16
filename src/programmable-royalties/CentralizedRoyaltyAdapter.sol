@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import "../access/OwnablePermissions.sol";
 import "./CentralizedRoyaltyDistributor.sol";
 
 /**
@@ -12,7 +11,7 @@ import "./CentralizedRoyaltyDistributor.sol";
  * @notice An adapter that implements IERC2981 and forwards royalty information requests to a centralized distributor.
  *         This makes the collection compatible with OpenSea's single-address royalty model.
  */
-abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165, OwnablePermissions {
+abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
     address public royaltyDistributor;
     uint256 public royaltyFeeNumerator;
     uint256 public constant FEE_DENOMINATOR = 10_000;
@@ -20,7 +19,6 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165, OwnablePermissi
     error CentralizedRoyaltyAdapter__DistributorCannotBeZeroAddress();
     error CentralizedRoyaltyAdapter__RoyaltyFeeWillExceedSalePrice();
     error CentralizedRoyaltyAdapter__CollectionNotRegistered();
-    error CentralizedRoyaltyAdapter__CallerIsNotContractOwner();
 
     event RoyaltyDistributorSet(address indexed distributor);
     event RoyaltyFeeNumeratorSet(uint256 feeNumerator);
@@ -119,21 +117,5 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165, OwnablePermissi
      */
     function supportsInterface(bytes4 interfaceId) public view virtual override(IERC165, ERC165) returns (bool) {
         return interfaceId == type(IERC2981).interfaceId || super.supportsInterface(interfaceId);
-    }
-    
-    /**
-     * @notice Implementation of the OwnablePermissions abstract function
-     * @dev This function is called by functions that require the caller to be the contract owner
-     */
-    function _requireCallerIsContractOwner() internal view virtual override {
-        if (msg.sender != owner()) {
-            revert CentralizedRoyaltyAdapter__CallerIsNotContractOwner();
-        }
-    }
-    
-    /**
-     * @notice Returns the contract owner
-     * @dev This function should be implemented by the inheriting contract
-     */
-    function owner() public view virtual returns (address);
+    }    
 }

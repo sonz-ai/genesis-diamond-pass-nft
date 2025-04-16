@@ -193,7 +193,7 @@ contract ERC721CWithCentralizedRoyalties is
         // Mint the token(s)
         for (uint256 i = 0; i < quantity; i++) {
             uint256 tokenId = mintedSupply() + i + 1;
-            _mintToken(_msgSender(), tokenId);
+            _mint(_msgSender(), tokenId);
         }
         
         // Forward payment to the contract owner
@@ -273,14 +273,8 @@ contract ERC721CWithCentralizedRoyalties is
         _safeMint(to, tokenId);
     }
 
-    function burn(uint256 tokenId) external {
+    function burn(uint256 tokenId) external onlyOwner {
         _burn(tokenId);
-    }
-
-    function _mintToken(address to, uint256 tokenId) internal virtual override {
-        // Register the minter with the centralized distributor
-        centralizedDistributor.setTokenMinter(address(this), tokenId, to);
-        _mint(to, tokenId);
     }
 
     function _mint(address to, uint256 tokenId) internal virtual override {
