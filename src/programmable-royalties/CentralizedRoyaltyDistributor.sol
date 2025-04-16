@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../access/OwnablePermissions.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -16,7 +15,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  * @notice A centralized royalty distributor that works with OpenSea's single address royalty model
  *         while maintaining the functionality to distribute royalties to minters and creators.
  */
-contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, ReentrancyGuard, Ownable {
+contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
     using Address for address payable;
 
@@ -35,6 +34,7 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
     error RoyaltyDistributor__NotMinterOfAnyTokens();
     error RoyaltyDistributor__AddressNotMinterOrCreator();
     error RoyaltyDistributor__CallerIsNotContractOwner();
+    error RoyaltyDistributor__MinterSharesCannotExceedCreatorShares();
 
     struct CollectionConfig {
         uint256 royaltyFeeNumerator;
@@ -97,8 +97,8 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
     /**
      * @notice Receive function to accept ETH payments
      */
-    receive() external payable {
-        emit RoyaltyReceived(msg.sender, msg.value);
+    receive() external payable virtual {
+        emit RoyaltyReceived(_msgSender(), msg.value);
     }
 
     /**
@@ -115,8 +115,7 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
         uint256 minterShares,
         uint256 creatorShares,
         address creator
-    ) external {
-        _requireCallerIsContractOwner();
+    ) external onlyOwner {
         
         if(_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionAlreadyRegistered();
@@ -132,6 +131,10 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
 
         if (creatorShares == 0) {
             revert RoyaltyDistributor__CreatorSharesCannotBeZero();
+        }
+
+        if (minterShares >= creatorShares) {
+            revert RoyaltyDistributor__MinterSharesCannotExceedCreatorShares();
         }
 
         if (creator == address(0)) {
@@ -190,8 +193,7 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
      * @param tokenId The token ID
      * @param minter The minter address
      */
-    function setTokenMinter(address collection, uint256 tokenId, address minter) external {
-        _requireCallerIsContractOwner();
+    function setTokenMinter(address collection, uint256 tokenId, address minter) external onlyOwner {
         if (!_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
@@ -255,9 +257,7 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
      * @param tokenId The token ID that was sold
      * @param salePrice The sale price
      */
-    function recordSale(address collection, uint256 tokenId, uint256 salePrice) external {
-        _requireCallerIsContractOwner();
-        
+    function recordSale(address collection, uint256 tokenId, uint256 salePrice) external onlyOwner {
         if (!_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
@@ -305,7 +305,7 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
         }
 
         _collectionRoyalties[collection] += amount;
-        emit RoyaltyReceived(msg.sender, amount);
+        emit RoyaltyReceived(_msgSender(), amount);
     }
 
     /**
@@ -319,9 +319,9 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
 
-        token.safeTransferFrom(msg.sender, address(this), amount);
+        token.safeTransferFrom(_msgSender(), address(this), amount);
         _collectionERC20Royalties[collection][token] += amount;
-        emit ERC20RoyaltyReceived(address(token), msg.sender, amount);
+        emit ERC20RoyaltyReceived(address(token), _msgSender(), amount);
     }
 
     /**
@@ -672,13 +672,5 @@ contract CentralizedRoyaltyDistributor is OwnablePermissions, ERC165, Reentrancy
      */
     function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165) returns (bool) {
         return interfaceId == type(IERC2981).interfaceId || super.supportsInterface(interfaceId);
-    }
-
-    /**
-     * @notice Implementation of the _requireCallerIsContractOwner function from OwnablePermissions
-     * @dev Reverts if the caller is not the contract owner
-     */
-    function _requireCallerIsContractOwner() internal view virtual override {
-        _checkOwner();
     }
 }
