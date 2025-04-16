@@ -9,7 +9,8 @@ import "./CentralizedRoyaltyDistributor.sol";
  * @title CentralizedRoyaltyAdapter
  * @author Custom implementation based on Limit Break, Inc. patterns
  * @notice An adapter that implements IERC2981 and forwards royalty information requests to a centralized distributor.
- *         This makes the collection compatible with OpenSea's single-address royalty model.
+ *         This makes the collection compatible with OpenSea's single-address royalty model while allowing royalties
+ *         to be split between minters and the creator using a Merkle distributor pattern for gas-efficient claims.
  */
 abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
     address public royaltyDistributor;
@@ -47,7 +48,8 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
     /**
      * @notice Returns the royalty info for a given token ID and sale price.
      * @dev Instead of returning the token-specific payment splitter, it returns the
-     *      centralized royalty distributor as the recipient.
+     *      centralized royalty distributor as the recipient. Marketplaces will send the full
+     *      royalty amount to the distributor which will use a Merkle distribution system for claims.
      * @param salePrice The sale price
      * @return receiver The royalty distributor address
      * @return royaltyAmount The royalty amount
@@ -107,6 +109,37 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
         CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
         (uint256 royaltyFeeNum,,,) = distributor.getCollectionConfig(address(this));
         return royaltyFeeNum;
+    }
+
+    /**
+     * @notice Get the active Merkle root for this collection
+     * @return The active Merkle root
+     */
+    function activeMerkleRoot() public view returns (bytes32) {
+        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
+        return distributor.getActiveMerkleRoot(address(this));
+    }
+
+    /**
+     * @notice Get royalty data for a token
+     * @param tokenId The token ID
+     * @return minter The token minter
+     * @return currentOwner The current owner
+     * @return transactionCount Number of transactions
+     * @return totalVolume Total sales volume
+     * @return minterRoyaltyEarned Total royalties earned by the minter
+     * @return creatorRoyaltyEarned Total royalties earned by the creator
+     */
+    function tokenRoyaltyData(uint256 tokenId) external view returns (
+        address minter,
+        address currentOwner,
+        uint256 transactionCount,
+        uint256 totalVolume,
+        uint256 minterRoyaltyEarned,
+        uint256 creatorRoyaltyEarned
+    ) {
+        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
+        return distributor.getTokenRoyaltyData(address(this), tokenId);
     }
 
     /**

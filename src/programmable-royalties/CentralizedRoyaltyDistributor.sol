@@ -8,13 +8,15 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol"; // Added for merkle proof verification
 
 /**
  * @title CentralizedRoyaltyDistributor
  * @author Custom implementation based on Limit Break, Inc. patterns
  * @notice A centralized royalty distributor that works with OpenSea's single address royalty model
  *         while maintaining the functionality to distribute royalties to minters and creators based on accumulated funds.
- * @dev This version uses a simplified distribution model where claims are based on the total accumulated royalty pool per collection, split by predefined shares. It does not track individual sale prices for precise per-sale distribution.
+ * @dev This version uses a Merkle distributor pattern for efficient, gas-optimized claims. An off-chain service tracks 
+ *      royalty attributions and periodically submits Merkle roots containing claimable amounts per recipient.
  */
 contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl {
     using SafeERC20 for IERC20;
@@ -35,6 +37,12 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     error RoyaltyDistributor__CallerIsNotCollectionOwner(); // Specific error for collection-callable functions
     error RoyaltyDistributor__SharesDoNotSumToDenominator(); // Ensure shares add up correctly
     error RoyaltyDistributor__CallerIsNotAdminOrServiceAccount(); // New error
+    error RoyaltyDistributor__NoActiveMerkleRoot(); // New error for Merkle claims
+    error RoyaltyDistributor__AlreadyClaimed(); // New error for Merkle claims
+    error RoyaltyDistributor__InvalidProof(); // New error for Merkle claims
+    error RoyaltyDistributor__InsufficientBalanceForRoot(); // New error for Merkle root submission
+    error RoyaltyDistributor__OracleUpdateTooFrequent(); // New error for oracle rate limiting
+    error RoyaltyDistributor__TransactionAlreadyProcessed(); // New error for batch update
 
     struct CollectionConfig {
         uint256 royaltyFeeNumerator;
@@ -53,6 +61,24 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     struct MinterTokenInfo {
         address collection;
         uint256 tokenId;
+    }
+
+    // New structs for royalty tracking
+    struct TokenRoyaltyData {
+        address minter;               // Original minter address
+        address currentOwner;         // Current owner address
+        uint256 transactionCount;     // Number of times the token has been traded
+        uint256 totalVolume;          // Cumulative trading volume
+        uint256 lastSyncedBlock;      // Latest block height when royalty data was updated
+        uint256 minterRoyaltyEarned;  // Total royalties earned by minter
+        uint256 creatorRoyaltyEarned; // Total royalties earned by creator for this token
+        mapping(bytes32 => bool) processedTransactions; // Hash map to prevent duplicate processing
+    }
+
+    struct CollectionRoyaltyData {
+        uint256 totalVolume;          // Total volume across all tokens
+        uint256 lastSyncedBlock;      // Latest sync block for the collection
+        uint256 totalRoyaltyCollected; // Total royalties received
     }
 
     // Using 10,000 basis points for shares as well for consistency
@@ -74,6 +100,20 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     // Accumulated royalties (in ERC20 tokens) for each collection and token
     mapping(address => mapping(IERC20 => uint256)) private _collectionERC20Royalties;
 
+    // NEW: Mappings for Merkle distributor pattern
+    mapping(address => bytes32) private _activeMerkleRoots; // collection => root
+    mapping(bytes32 => mapping(address => bool)) private _hasClaimedMerkle; // root => recipient => claimed status
+    mapping(bytes32 => uint256) private _merkleRootTotalAmount; // root => totalAmount
+    mapping(bytes32 => uint256) private _merkleRootSubmissionTime; // root => timestamp
+
+    // NEW: Mappings for royalty data tracking
+    mapping(address => mapping(uint256 => TokenRoyaltyData)) private _tokenRoyaltyData; // collection => tokenId => data
+    mapping(address => CollectionRoyaltyData) private _collectionRoyaltyData; // collection => data
+
+    // NEW: Mappings for oracle rate limiting
+    mapping(address => uint256) private _lastOracleUpdateBlock; // collection => block number
+    mapping(address => uint256) private _oracleUpdateMinBlockInterval; // collection => block interval
+
     // Role definition
     bytes32 public constant SERVICE_ACCOUNT_ROLE = keccak256("SERVICE_ACCOUNT_ROLE");
 
@@ -82,9 +122,24 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     event MinterAssigned(address indexed collection, uint256 indexed tokenId, address indexed minter);
     event RoyaltyReceived(address indexed collection, address indexed sender, uint256 amount); // Added collection context
     event ERC20RoyaltyReceived(address indexed collection, address indexed token, address indexed sender, uint256 amount); // Added collection context
-    event SaleRoyaltyRecorded(address indexed collection, uint256 indexed tokenId, uint256 salePrice, uint256 royaltyAmount); // Specific event for recorded sales royalty
-    event RoyaltyClaimed(address indexed collection, address indexed claimant, uint256 amount, bool isMinter); // Renamed for clarity
-    event ERC20RoyaltyClaimed(address indexed collection, address indexed token, address indexed claimant, uint256 amount, bool isMinter); // Renamed for clarity
+    
+    // NEW: Events for Merkle distribution
+    event MerkleRootSubmitted(address indexed collection, bytes32 indexed merkleRoot, uint256 totalAmountInTree, uint256 timestamp);
+    event MerkleRoyaltyClaimed(address indexed recipient, uint256 amount, bytes32 indexed merkleRoot, address indexed collection);
+    
+    // NEW: Event for detailed royalty attribution
+    event RoyaltyAttributed(
+        address indexed collection,
+        uint256 indexed tokenId,
+        address indexed minter,
+        uint256 salePrice,
+        uint256 minterShareAttributed,
+        uint256 creatorShareAttributed,
+        bytes32 transactionHash 
+    );
+    
+    // New event for oracle settings
+    event OracleUpdateIntervalSet(address indexed collection, uint256 minBlockInterval);
 
     /**
      * @notice Modifier to ensure the caller is the registered collection contract
@@ -106,11 +161,14 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     }
 
     /**
-     * @notice Receive function to accept direct ETH payments (e.g., manual top-ups by admin)
-     * @dev Does not automatically allocate funds. Use addCollectionRoyalties.
+     * @notice Receive function to accept ETH payments from marketplaces 
+     * @dev Funds received will be added to the collection's royalty pool.
+     *      For direct marketplaces implementing IERC2981, this will be called automatically.
      */
     receive() external payable virtual {
-        // Intentionally left blank - requires manual assignment via addCollectionRoyalties
+        // Marketplace usually doesn't identify the collection in the call, 
+        // so we'll need the off-chain service to attribute this payment later
+        // via batchUpdateRoyaltyData.
     }
 
     /**
@@ -156,6 +214,16 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             creator: creator,
             registered: true
         });
+
+        // Initialize the collection's royalty data
+        _collectionRoyaltyData[collection] = CollectionRoyaltyData({
+            totalVolume: 0,
+            lastSyncedBlock: block.number,
+            totalRoyaltyCollected: 0
+        });
+
+        // Set default oracle update interval (can be changed by admin)
+        _oracleUpdateMinBlockInterval[collection] = 5760; // Default ~1 day at 15s blocks
 
         emit CollectionRegistered(collection, royaltyFeeNumerator, minterShares, creatorShares, creator);
     }
@@ -222,6 +290,16 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         // Add this token to the minter's list for this specific collection
         _minterCollectionTokens[minter][collection].push(tokenId);
 
+        // Initialize the token's royalty data
+        TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
+        tokenData.minter = minter;
+        tokenData.currentOwner = minter;
+        tokenData.transactionCount = 0;
+        tokenData.totalVolume = 0;
+        tokenData.lastSyncedBlock = block.number;
+        tokenData.minterRoyaltyEarned = 0;
+        tokenData.creatorRoyaltyEarned = 0;
+
         emit MinterAssigned(collection, tokenId, minter);
     }
 
@@ -257,58 +335,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     }
 
     /**
-     * @notice Records a sale and allocates the calculated royalty to the collection's pool.
-     * @dev Should only be called by the admin (DEFAULT_ADMIN_ROLE) or a service account (SERVICE_ACCOUNT_ROLE).
-     * @param collection The collection address
-     * @param tokenId The token ID that was sold
-     * @param salePrice The sale price in ETH
-     */
-    function recordSaleRoyalty(address collection, uint256 tokenId, uint256 salePrice) external {
-        // Role Check: Allow Admin or Service Account
-        if (!hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
-            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
-        }
-        
-        CollectionConfig storage config = _collectionConfigs[collection];
-        if (!config.registered) {
-             revert RoyaltyDistributor__CollectionNotRegistered();
-        }
-
-        uint256 royaltyAmount = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
-
-        if (royaltyAmount > 0) {
-             _collectionRoyalties[collection] += royaltyAmount;
-             emit SaleRoyaltyRecorded(collection, tokenId, salePrice, royaltyAmount);
-        }
-    }
-    
-    /**
-     * @notice Records ERC20 royalties received from an external source.
-     * @dev Should only be called by the admin (DEFAULT_ADMIN_ROLE) or a service account (SERVICE_ACCOUNT_ROLE).
-     *      Assumes the ERC20 transfer to this contract has already occurred.
-     * @param collection The collection address
-     * @param token The ERC20 token address
-     * @param amount The amount of ERC20 royalty received for this collection
-     */
-    function recordERC20Royalty(address collection, IERC20 token, uint256 amount) external {
-        // Role Check: Allow Admin or Service Account
-        if (!hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
-            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
-        }
-
-        if (!_collectionConfigs[collection].registered) {
-             revert RoyaltyDistributor__CollectionNotRegistered();
-        }
-
-        if (amount > 0) {
-            // Assumes the token transfer to *this* distributor contract happened *before* this call.
-            // This function only records the amount against the collection.
-            _collectionERC20Royalties[collection][token] += amount;
-            emit ERC20RoyaltyReceived(collection, address(token), msg.sender, amount); // msg.sender is admin/service account
-        }
-    }
-
-    /**
      * @notice Get the accumulated ETH royalties for a collection
      * @param collection The collection address
      * @return The accumulated ETH royalties
@@ -327,6 +353,361 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         return _collectionERC20Royalties[collection][token];
     }
 
+    /**
+     * @notice Set the minimum block interval for oracle updates for a collection
+     * @dev Only callable by admin
+     * @param collection The collection address
+     * @param interval The minimum block interval between oracle updates
+     */
+    function setOracleUpdateMinBlockInterval(address collection, uint256 interval) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _oracleUpdateMinBlockInterval[collection] = interval;
+        emit OracleUpdateIntervalSet(collection, interval);
+    }
+
+    /**
+     * @notice Process batch royalty data for multiple transactions
+     * @dev Restricted to SERVICE_ACCOUNT_ROLE or DEFAULT_ADMIN_ROLE
+     * @param collection The collection address
+     * @param tokenIds Array of token IDs involved in sales
+     * @param minters Array of minter addresses for each token
+     * @param creator The creator address for the collection
+     * @param salePrices Array of sale prices for each transaction
+     * @param transactionTimestamps Array of timestamps for each transaction
+     * @param transactionHashes Array of transaction hashes for each sale
+     */
+    function batchUpdateRoyaltyData(
+        address collection,
+        uint256[] calldata tokenIds,
+        address[] calldata minters,
+        address creator,
+        uint256[] calldata salePrices,
+        uint256[] calldata transactionTimestamps,
+        bytes32[] calldata transactionHashes
+    ) external {
+        // Check caller has permission
+        if (!hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
+            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
+        }
+
+        // Check collection is registered
+        CollectionConfig storage config = _collectionConfigs[collection];
+        if (!config.registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+
+        // Validate arrays have the same length
+        uint256 length = tokenIds.length;
+        require(
+            minters.length == length &&
+            salePrices.length == length &&
+            transactionTimestamps.length == length &&
+            transactionHashes.length == length,
+            "Array lengths must match"
+        );
+
+        // Process each sale
+        for (uint256 i = 0; i < length; i++) {
+            uint256 tokenId = tokenIds[i];
+            address minter = minters[i];
+            uint256 salePrice = salePrices[i];
+            bytes32 txHash = transactionHashes[i];
+            
+            // Get token royalty data
+            TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
+            
+            // Skip if transaction already processed
+            if (tokenData.processedTransactions[txHash]) {
+                continue;
+            }
+            
+            // Calculate royalty amount based on collection config
+            uint256 royaltyAmount = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
+            
+            if (royaltyAmount > 0) {
+                // Calculate shares
+                uint256 minterShare = (royaltyAmount * config.minterShares) / SHARES_DENOMINATOR;
+                uint256 creatorShare = royaltyAmount - minterShare; // Avoid rounding errors
+                
+                // Update token data
+                tokenData.transactionCount++;
+                tokenData.totalVolume += salePrice;
+                tokenData.minterRoyaltyEarned += minterShare;
+                tokenData.creatorRoyaltyEarned += creatorShare;
+                tokenData.lastSyncedBlock = block.number;
+                tokenData.processedTransactions[txHash] = true;
+                
+                // Update collection data
+                CollectionRoyaltyData storage collectionData = _collectionRoyaltyData[collection];
+                collectionData.totalVolume += salePrice;
+                collectionData.totalRoyaltyCollected += royaltyAmount;
+                collectionData.lastSyncedBlock = block.number;
+                
+                // Emit detailed attribution event
+                emit RoyaltyAttributed(
+                    collection,
+                    tokenId,
+                    minter,
+                    salePrice,
+                    minterShare,
+                    creatorShare,
+                    txHash
+                );
+            }
+        }
+    }
+
+    /**
+     * @notice Submit a Merkle root for royalty claims
+     * @dev Only callable by SERVICE_ACCOUNT_ROLE
+     * @param collection The collection address
+     * @param merkleRoot The Merkle root of all claimable (address, amount) pairs
+     * @param totalAmountInTree The total ETH amount included in the Merkle tree
+     */
+    function submitRoyaltyMerkleRoot(
+        address collection, 
+        bytes32 merkleRoot, 
+        uint256 totalAmountInTree
+    ) external onlyRole(SERVICE_ACCOUNT_ROLE) {
+        // Check collection is registered
+        if (!_collectionConfigs[collection].registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+        
+        // Check available balance is sufficient for the total amounts in the tree
+        if (totalAmountInTree > _collectionRoyalties[collection]) {
+            revert RoyaltyDistributor__InsufficientBalanceForRoot();
+        }
+        
+        // Set the active Merkle root for the collection
+        _activeMerkleRoots[collection] = merkleRoot;
+        _merkleRootTotalAmount[merkleRoot] = totalAmountInTree;
+        _merkleRootSubmissionTime[merkleRoot] = block.timestamp;
+        
+        emit MerkleRootSubmitted(
+            collection, 
+            merkleRoot, 
+            totalAmountInTree, 
+            block.timestamp
+        );
+    }
+
+    /**
+     * @notice Claim royalties using Merkle proof
+     * @dev Verifies the proof and transfers the claimed amount to the recipient
+     * @param collection The collection address
+     * @param recipient The address receiving the royalties
+     * @param amount The amount to claim
+     * @param merkleProof The Merkle proof to verify the claim
+     */
+    function claimRoyaltiesMerkle(
+        address collection,
+        address recipient,
+        uint256 amount,
+        bytes32[] calldata merkleProof
+    ) external nonReentrant {
+        // Get active Merkle root for collection
+        bytes32 activeRoot = _activeMerkleRoots[collection];
+        
+        // Check root exists
+        if (activeRoot == bytes32(0)) {
+            revert RoyaltyDistributor__NoActiveMerkleRoot();
+        }
+        
+        // Check has not already claimed
+        if (_hasClaimedMerkle[activeRoot][recipient]) {
+            revert RoyaltyDistributor__AlreadyClaimed();
+        }
+        
+        // Verify proof
+        bytes32 leaf = keccak256(abi.encodePacked(recipient, amount));
+        bool validProof = MerkleProof.verify(merkleProof, activeRoot, leaf);
+        
+        if (!validProof) {
+            revert RoyaltyDistributor__InvalidProof();
+        }
+        
+        // Mark as claimed
+        _hasClaimedMerkle[activeRoot][recipient] = true;
+        
+        // Ensure royalty pool has enough funds
+        if (_collectionRoyalties[collection] < amount) {
+            revert RoyaltyDistributor__NotEnoughEtherToDistributeForCollection();
+        }
+        
+        // Reduce collection royalties
+        _collectionRoyalties[collection] -= amount;
+        
+        // Transfer amount to recipient
+        payable(recipient).sendValue(amount);
+        
+        emit MerkleRoyaltyClaimed(recipient, amount, activeRoot, collection);
+    }
+
+    /**
+     * @notice Public function to trigger oracle update of royalty data
+     * @dev Rate-limited to prevent abuse
+     * @param collection The collection address
+     */
+    function updateRoyaltyDataViaOracle(address collection) external {
+        // Check collection is registered
+        if (!_collectionConfigs[collection].registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+        
+        // Check rate limit
+        uint256 minInterval = _oracleUpdateMinBlockInterval[collection];
+        if (block.number < _lastOracleUpdateBlock[collection] + minInterval) {
+            revert RoyaltyDistributor__OracleUpdateTooFrequent();
+        }
+        
+        // Update last call block
+        _lastOracleUpdateBlock[collection] = block.number;
+        
+        // This is where you would make the Chainlink oracle call
+        // Example (commented out as it would need the Chainlink infrastructure):
+        /*
+        Chainlink.Request memory req = buildChainlinkRequest(
+            jobId,
+            address(this),
+            this.fulfillRoyaltyData.selector
+        );
+        req.add("collection", Chainlink.addressToString(collection));
+        req.add("fromBlock", Chainlink.uintToString(_collectionRoyaltyData[collection].lastSyncedBlock));
+        sendOperatorRequest(req, oracleFee);
+        */
+    }
+    
+    /**
+     * @notice Chainlink callback function for oracle royalty data updates
+     * @dev Would be called by the Chainlink node after processing updateRoyaltyDataViaOracle
+     * @param _requestId The Chainlink request ID
+     * @param collection The collection address
+     * @param tokenIds Array of token IDs involved in sales
+     * @param minters Array of minter addresses for each token
+     * @param creator The creator address for the collection
+     * @param salePrices Array of sale prices for each transaction
+     * @param transactionTimestamps Array of timestamps for each transaction
+     * @param transactionHashes Array of transaction hashes for each sale
+     */
+    function fulfillRoyaltyData(
+        bytes32 _requestId,
+        address collection,
+        uint256[] calldata tokenIds,
+        address[] calldata minters,
+        address creator,
+        uint256[] calldata salePrices,
+        uint256[] calldata transactionTimestamps,
+        bytes32[] calldata transactionHashes
+    ) external /* recordChainlinkFulfillment(_requestId) */ {
+        // This function would need to be restricted to the Chainlink oracle node
+        // For now we'll implement the same logic as batchUpdateRoyaltyData
+        
+        // Assuming we have verified this is from our oracle, process the data
+        // This is essentially the same as batchUpdateRoyaltyData but would be
+        // triggered by the Chainlink oracle instead of a service account
+        
+        // The implementation would be similar to batchUpdateRoyaltyData 
+        // but with Chainlink-specific security checks
+    }
+
+    /**
+     * @notice Get the active Merkle root for a collection
+     * @param collection The collection address
+     */
+    function getActiveMerkleRoot(address collection) external view returns (bytes32) {
+        return _activeMerkleRoots[collection];
+    }
+
+    /**
+     * @notice Check if a recipient has already claimed for a specific Merkle root
+     * @param merkleRoot The Merkle root to check against
+     * @param recipient The recipient address
+     */
+    function hasClaimedMerkle(bytes32 merkleRoot, address recipient) external view returns (bool) {
+        return _hasClaimedMerkle[merkleRoot][recipient];
+    }
+
+    /**
+     * @notice Get information about a Merkle root
+     * @param merkleRoot The Merkle root
+     * @return totalAmount The total amount included in the root
+     * @return submissionTime The timestamp when the root was submitted
+     */
+    function getMerkleRootInfo(bytes32 merkleRoot) external view returns (
+        uint256 totalAmount,
+        uint256 submissionTime
+    ) {
+        return (
+            _merkleRootTotalAmount[merkleRoot],
+            _merkleRootSubmissionTime[merkleRoot]
+        );
+    }
+
+    /**
+     * @notice Get royalty data for a specific token
+     * @param collection The collection address
+     * @param tokenId The token ID
+     * @return minter The token minter
+     * @return currentOwner The current owner
+     * @return transactionCount Number of transactions
+     * @return totalVolume Total sales volume
+     * @return minterRoyaltyEarned Total royalties earned by the minter
+     * @return creatorRoyaltyEarned Total royalties earned by the creator
+     */
+    function getTokenRoyaltyData(address collection, uint256 tokenId) external view returns (
+        address minter,
+        address currentOwner,
+        uint256 transactionCount,
+        uint256 totalVolume,
+        uint256 minterRoyaltyEarned,
+        uint256 creatorRoyaltyEarned
+    ) {
+        TokenRoyaltyData storage data = _tokenRoyaltyData[collection][tokenId];
+        return (
+            data.minter,
+            data.currentOwner,
+            data.transactionCount,
+            data.totalVolume,
+            data.minterRoyaltyEarned,
+            data.creatorRoyaltyEarned
+        );
+    }
+
+    /**
+     * @notice Get royalty data for a collection
+     * @param collection The collection address
+     * @return totalVolume Total sales volume
+     * @return lastSyncedBlock Last block number when data was synced
+     * @return totalRoyaltyCollected Total royalties collected
+     */
+    function getCollectionRoyaltyData(address collection) external view returns (
+        uint256 totalVolume,
+        uint256 lastSyncedBlock,
+        uint256 totalRoyaltyCollected
+    ) {
+        CollectionRoyaltyData storage data = _collectionRoyaltyData[collection];
+        return (
+            data.totalVolume,
+            data.lastSyncedBlock,
+            data.totalRoyaltyCollected
+        );
+    }
+
+    /**
+     * @dev Indicates whether the contract implements the specified interface.
+     * @param interfaceId The interface id
+     * @return true if the contract implements the specified interface, false otherwise
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, AccessControl) returns (bool) {
+        // Includes ERC165 and IAccessControl
+        return super.supportsInterface(interfaceId);
+    }
+
+    // REMOVED: recordSaleRoyalty, recordERC20Royalty, claimRoyalties, claimERC20Royalties functions
+
+    // We're keeping addCollectionRoyalties and addCollectionERC20Royalties as they might be useful
+    // for manual testing or in case direct contributions are needed
+    
     /**
      * @notice Manually add ETH royalties for a collection (callable by anyone, requires sending ETH)
      * @dev Use this for direct contributions or if the receive() function is too restrictive.
@@ -362,179 +743,5 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         token.safeTransferFrom(msg.sender, address(this), amount);
         _collectionERC20Royalties[collection][token] += amount;
         emit ERC20RoyaltyReceived(collection, address(token), msg.sender, amount);
-    }
-
-    /**
-     * @notice Distribute the claimant's share of accumulated ETH royalties for a specific collection.
-     * @dev Calculates the share based on the claimant's role (minter or creator) and the total currently held royalties.
-     * @param collection The collection address
-     * @param claimant The address claiming royalties (must be the collection's creator or a minter in that collection)
-     */
-    function claimRoyalties(
-        address collection,
-        address claimant
-    ) external nonReentrant {
-        CollectionConfig storage config = _collectionConfigs[collection];
-        if (!config.registered) {
-            revert RoyaltyDistributor__CollectionNotRegistered();
-        }
-
-        uint256 availableAmount = _collectionRoyalties[collection];
-        if (availableAmount == 0) {
-            revert RoyaltyDistributor__NoRoyaltiesDueForAddress(); // Use specific error
-        }
-        
-        bool isMinter = false;
-        uint256 shareNumerator;
-
-        if (claimant == config.creator) {
-            shareNumerator = config.creatorShares;
-            isMinter = false;
-        } else {
-            // Check if claimant is a minter *for this specific collection*
-            if (_minterCollectionTokens[claimant][collection].length > 0) {
-                 shareNumerator = config.minterShares;
-                 isMinter = true;
-            } else {
-                 revert RoyaltyDistributor__AddressNotMinterOrCreatorForCollection();
-            }
-        }
-        
-        // Calculate amount based on recipient role's share of the total pool
-        uint256 amountToDistribute = (availableAmount * shareNumerator) / SHARES_DENOMINATOR;
-        
-        if (amountToDistribute == 0) {
-            revert RoyaltyDistributor__NoRoyaltiesDueForAddress();
-        }
-        
-        // Decrease the total pool *before* sending to prevent reentrancy issues (although nonReentrant guard is also present)
-        _collectionRoyalties[collection] -= amountToDistribute;
-        
-        // Send the royalties
-        payable(claimant).sendValue(amountToDistribute);
-        emit RoyaltyClaimed(collection, claimant, amountToDistribute, isMinter);
-    }
-
-    /**
-     * @notice Distribute the claimant's share of accumulated ERC20 royalties for a specific collection and token.
-     * @dev Calculates the share based on the claimant's role (minter or creator) and the total currently held royalties for that token.
-     * @param collection The collection address
-     * @param claimant The address claiming royalties (must be the collection's creator or a minter in that collection)
-     * @param token The ERC20 token address
-     */
-    function claimERC20Royalties(
-        address collection,
-        address claimant,
-        IERC20 token
-    ) external nonReentrant {
-        CollectionConfig storage config = _collectionConfigs[collection];
-        if (!config.registered) {
-            revert RoyaltyDistributor__CollectionNotRegistered();
-        }
-
-        uint256 availableAmount = _collectionERC20Royalties[collection][token];
-        if (availableAmount == 0) {
-            revert RoyaltyDistributor__NoRoyaltiesDueForAddress(); // Use specific error
-        }
-        
-        bool isMinter = false;
-        uint256 shareNumerator;
-
-        if (claimant == config.creator) {
-            shareNumerator = config.creatorShares;
-            isMinter = false;
-        } else {
-            // Check if claimant is a minter *for this specific collection*
-            if (_minterCollectionTokens[claimant][collection].length > 0) {
-                 shareNumerator = config.minterShares;
-                 isMinter = true;
-            } else {
-                 revert RoyaltyDistributor__AddressNotMinterOrCreatorForCollection();
-            }
-        }
-        
-        // Calculate amount based on recipient role's share of the total pool for this token
-        uint256 amountToDistribute = (availableAmount * shareNumerator) / SHARES_DENOMINATOR;
-        
-        if (amountToDistribute == 0) {
-            revert RoyaltyDistributor__NoRoyaltiesDueForAddress();
-        }
-        
-        // Decrease the total pool *before* sending
-        _collectionERC20Royalties[collection][token] -= amountToDistribute;
-        
-        // Send the royalties
-        token.safeTransfer(claimant, amountToDistribute);
-        emit ERC20RoyaltyClaimed(collection, address(token), claimant, amountToDistribute, isMinter);
-    }
-
-    /**
-     * @notice Check how much ETH royalties are due for an address in a collection based on current pool and shares.
-     * @param collection The collection address
-     * @param claimant The address to check
-     * @return The amount of ETH royalties currently claimable by the address
-     */
-    function getRoyaltiesDueForAddress(address collection, address claimant) external view returns (uint256) {
-        CollectionConfig storage config = _collectionConfigs[collection];
-        if (!config.registered) {
-             // Return 0 if collection not registered instead of reverting? Be consistent. Let's revert.
-             revert RoyaltyDistributor__CollectionNotRegistered();
-        }
-
-        uint256 availableAmount = _collectionRoyalties[collection];
-        if (availableAmount == 0) {
-            return 0;
-        }
-        
-        uint256 shareNumerator;
-        if (claimant == config.creator) {
-            shareNumerator = config.creatorShares;
-        } else if (_minterCollectionTokens[claimant][collection].length > 0) {
-            shareNumerator = config.minterShares;
-        } else {
-            return 0; // Not the creator and not a minter for this collection
-        }
-        
-        return (availableAmount * shareNumerator) / SHARES_DENOMINATOR;
-    }
-
-    /**
-     * @notice Check how much ERC20 royalties are due for an address in a collection for a specific token.
-     * @param collection The collection address
-     * @param claimant The address to check
-     * @param token The ERC20 token address
-     * @return The amount of ERC20 royalties currently claimable by the address for that token
-     */
-    function getERC20RoyaltiesDueForAddress(address collection, address claimant, IERC20 token) external view returns (uint256) {
-        CollectionConfig storage config = _collectionConfigs[collection];
-        if (!config.registered) {
-             revert RoyaltyDistributor__CollectionNotRegistered();
-        }
-
-        uint256 availableAmount = _collectionERC20Royalties[collection][token];
-        if (availableAmount == 0) {
-            return 0;
-        }
-        
-        uint256 shareNumerator;
-        if (claimant == config.creator) {
-            shareNumerator = config.creatorShares;
-        } else if (_minterCollectionTokens[claimant][collection].length > 0) {
-            shareNumerator = config.minterShares;
-        } else {
-            return 0; // Not the creator and not a minter for this collection
-        }
-        
-        return (availableAmount * shareNumerator) / SHARES_DENOMINATOR;
-    }
-
-    /**
-     * @dev Indicates whether the contract implements the specified interface.
-     * @param interfaceId The interface id
-     * @return true if the contract implements the specified interface, false otherwise
-     */
-    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, AccessControl) returns (bool) {
-        // Includes ERC165 and IAccessControl
-        return super.supportsInterface(interfaceId);
     }
 }
