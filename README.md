@@ -58,18 +58,23 @@ This project uses [Foundry](https://book.getfoundry.sh/) for development, testin
    cd genesis-pass-nft
    ```
 
-2. Install dependencies:
+2. Initialize and update git submodules:
+   ```bash
+   git submodule update --init --recursive
+   ```
+
+3. Install dependencies:
    ```bash
    forge install
    npm install
    ```
 
-3. Build the project:
+4. Build the project:
    ```bash
    forge build
    ```
 
-4. Run tests:
+5. Run tests:
    ```bash
    forge test
    ```

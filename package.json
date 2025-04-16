@@ -7,6 +7,7 @@
     "setup-whitelist": "node script/SetupWhitelist.js",
     "setup-chainlink-secrets": "node script/SetupChainlinkSecrets.js",
     "transfer-ownership": "node script/TransferOwnership.js",
+    "setup-submodules": "bash scripts/setup-submodules.sh",
     "test": "forge test",
     "build": "forge build"
   },
