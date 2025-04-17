@@ -239,8 +239,10 @@ contract DiamondGenesisPass is
         
         _mintedCount += quantity; // Optimized count update
         
-        // Forward payment to the CentralizedRoyaltyDistributor for this collection
-        centralizedDistributor.addCollectionRoyalties{value: msg.value}(address(this));
+        // --- PAYMENT FORWARDING --- 
+        // Forward payment directly to the current contract owner
+        (bool success, ) = owner().call{value: msg.value}("");
+        require(success, "Payment transfer failed");
         
         emit WhitelistMinted(sender, quantity, firstTokenId);
     }
@@ -267,9 +269,11 @@ contract DiamondGenesisPass is
         _mint(to, tokenId);
         _mintedCount++; // Optimized count update
         
-        // Forward payment to the CentralizedRoyaltyDistributor for this collection
-        centralizedDistributor.addCollectionRoyalties{value: msg.value}(address(this));
-
+        // --- PAYMENT FORWARDING --- 
+        // Forward payment directly to the current contract owner
+        (bool success, ) = owner().call{value: msg.value}("");
+        require(success, "Payment transfer failed");
+        
         emit PublicMinted(to, tokenId);
     }
     
@@ -295,9 +299,11 @@ contract DiamondGenesisPass is
         _safeMint(to, tokenId);
         _mintedCount++; // Optimized count update
         
-        // Forward payment to the CentralizedRoyaltyDistributor for this collection
-        centralizedDistributor.addCollectionRoyalties{value: msg.value}(address(this));
-
+        // --- PAYMENT FORWARDING --- 
+        // Forward payment directly to the current contract owner
+        (bool success, ) = owner().call{value: msg.value}("");
+        require(success, "Payment transfer failed");
+        
          emit PublicMinted(to, tokenId);
     }
     
@@ -367,24 +373,6 @@ contract DiamondGenesisPass is
      function _safeMint(address to, uint256 tokenId, bytes memory data) internal virtual override {
         centralizedDistributor.setTokenMinter(address(this), tokenId, to);
         super._safeMint(to, tokenId, data);
-    }
-    
-    // --- Sale Recording --- 
-
-    /**
-     * @notice Record a sale's royalty contribution in the centralized distributor.
-     * @dev Only callable by the owner or SERVICE_ACCOUNT_ROLE.
-     *      Caller must have appropriate permissions on the CentralizedRoyaltyDistributor contract.
-     * @param tokenId The token ID that was sold
-     * @param salePrice The sale price in ETH
-     */
-    function recordSale(uint256 tokenId, uint256 salePrice) external onlyOwnerOrServiceAccount { // Use new modifier
-        // Use the immutable distributor reference
-        // Note: The distributor's recordSaleRoyalty function performs its own role check 
-        // (DEFAULT_ADMIN_ROLE or SERVICE_ACCOUNT_ROLE on the distributor).
-        // The caller of this function (owner or service account) must have one of those roles on the distributor.
-        centralizedDistributor.recordSaleRoyalty(address(this), tokenId, salePrice);
-        emit SaleRecorded(address(this), tokenId, salePrice); 
     }
 
     // --- Metadata URI Handling (Inherited from MetadataURI) --- 

@@ -117,6 +117,31 @@ Our solution uses a three-contract system with refined access control:
         *   `MerkleRoyaltyClaimed`: Emitted when a claim is processed
         *   `RoyaltyReceived`/`ERC20RoyaltyReceived`: Emitted when royalties are received
 
+**8. On-Chain Analytics**
+
+*   **On-Chain Metrics (Totals Only):**
+    *   `uint256 public totalAccruedRoyalty;` // total royalties accrued across all recipients
+    *   `uint256 public totalClaimedRoyalty;` // total royalties claimed across all recipients
+
+*   **Contract Modifications:**
+    *   In `submitRoyaltyMerkleRoot`, update:
+        ```solidity
+        totalAccruedRoyalty += totalAmountInTree;
+        ```
+    *   In `claimRoyaltiesMerkle`, update:
+        ```solidity
+        totalClaimedRoyalty += amount;
+        ```
+
+*   **View Functions (gas-free external calls):**
+    *   `function totalAccrued() external view returns (uint256) { return totalAccruedRoyalty; }`
+    *   `function totalClaimed() external view returns (uint256) { return totalClaimedRoyalty; }`
+    *   _Per-recipient analytics are derived off-chain via emitted events (MerkleRootSubmitted, MerkleRoyaltyClaimed, RoyaltyAttributed)._  
+    *   **Off-Chain Analytics Workflow:**
+        - **Events:** `RoyaltyAttributed`, `MerkleRootSubmitted`, `MerkleRoyaltyClaimed`
+        - **Indexing:** Use The Graph or a custom service to subscribe to these events and maintain per-recipient `accrued`, `claimed`, and `unclaimed` balances off-chain.
+        - **Data Access:** Expose GraphQL/REST endpoints or a dApp front-end for querying real-time per-user metrics based on the indexed data.
+
 **6. Security Considerations & Risk Mitigations**
 
 *   **Distributor Security:** The `CentralizedRoyaltyDistributor` holds funds. It uses `ReentrancyGuard` for claim functions and checks fund availability before submissions/claims.
@@ -143,7 +168,7 @@ Our solution uses a three-contract system with refined access control:
 *   **Administrative Dashboard:** A UI for the contract owner to monitor transfers, add/remove service accounts, and manage the distribution system.
 *   **User Claim Interface:** A UI for minters and creators to check their earned royalties and generate the Merkle proofs needed to claim.
 
-**8. Royalty Data Collection & Claims Process**
+**9. Royalty Data Collection & Claims Process**
 
 *   **Collection-level Data Structure:**
     ```solidity
@@ -261,7 +286,7 @@ Our solution uses a three-contract system with refined access control:
     }
     ```
 
-**9. Future Considerations & Improvements**
+**10. Future Considerations & Improvements**
 
 *   **Gas Optimization:** Achieved significantly for claims using the Merkle distributor pattern. Batch updates (`batchUpdateRoyaltyData`) remain potentially costly but are handled by the service operator.
 *   **Enhanced Access Control:** `setTokenMinter` restricted to the collection contract. Clear roles for Admin (`DEFAULT_ADMIN_ROLE`) and Service (`SERVICE_ACCOUNT_ROLE`).
@@ -281,3 +306,45 @@ Our solution uses a three-contract system with refined access control:
     *   Add secure oracle node communication
 *   **Transaction Indexing:** Implement more sophisticated indexing methods to quickly locate missing price data for efficient batch updates.
 *   **Testing and Auditing:** Comprehensive testing and security audit before full production deployment.
+
+**Minter Status as a Tradable Commodity (Updated Spec)**
+
+### 1. Minter Status Management
+- The contract owner can assign or revoke minter status for any tokenId in the collection.
+- Minter status entitles the holder to receive royalties for that token.
+
+### 2. Bidding System for Minter Status
+- Anyone can bid (by depositing ETH) to acquire minter status:
+  - For a specific tokenId (token-specific bid).
+  - For any token in the collection (collection-wide bid).
+- Bids are tracked per tokenId and at the collection level.
+- Bidders can increase their bids; ETH is escrowed in the contract.
+
+### 3. Viewing Bids
+- A public function allows anyone to view all current bidders and their bid amounts:
+  - For a specific tokenId.
+  - For the collection as a whole.
+
+### 4. Selling Minter Status
+- The current minter of a tokenId can accept the highest bid:
+  - If the highest bid is for their specific tokenId, they can sell minter status to that bidder.
+  - If the highest bid is at the collection level, they can sell minter status to that bidder.
+- Upon sale:
+  - The minter status is transferred to the new owner.
+  - The ETH from the highest bid is distributed as follows:
+    - 100% of the royalty for the minter status trade goes directly to the contract owner (not to the centralized royalty distributor).
+    - The remainder (if any) is transferred to the seller.
+  - All other bids for that tokenId or collection are refunded.
+
+### 5. Security & Edge Cases
+- Only the current minter can sell their minter status.
+- If a bid is outbid, the previous bidder can withdraw their ETH.
+- Prevent reentrancy and ensure proper ETH handling.
+
+### 6. Example Solidity Functions
+- `setMinterStatus(tokenId, address newMinter)` (onlyOwner)
+- `placeBid(tokenId, isCollectionBid)` (payable)
+- `viewBids(tokenId)` returns (Bid[])
+- `viewCollectionBids()` returns (Bid[])
+- `acceptHighestBid(tokenId)` (onlyMinter)
+- `withdrawBid(tokenId, isCollectionBid)`

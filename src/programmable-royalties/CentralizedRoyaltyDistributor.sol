@@ -370,7 +370,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
      * @param collection The collection address
      * @param tokenIds Array of token IDs involved in sales
      * @param minters Array of minter addresses for each token
-     * @param creator The creator address for the collection
      * @param salePrices Array of sale prices for each transaction
      * @param transactionTimestamps Array of timestamps for each transaction
      * @param transactionHashes Array of transaction hashes for each sale
@@ -379,7 +378,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         address collection,
         uint256[] calldata tokenIds,
         address[] calldata minters,
-        address creator,
         uint256[] calldata salePrices,
         uint256[] calldata transactionTimestamps,
         bytes32[] calldata transactionHashes
@@ -410,6 +408,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             uint256 tokenId = tokenIds[i];
             address minter = minters[i];
             uint256 salePrice = salePrices[i];
+            // uint256 transactionTimestamp = transactionTimestamps[i];
             bytes32 txHash = transactionHashes[i];
             
             // Get token royalty data
@@ -436,10 +435,9 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
                 tokenData.lastSyncedBlock = block.number;
                 tokenData.processedTransactions[txHash] = true;
                 
-                // Update collection data
+                // Update collection data (Total Volume and Last Sync Block Only)
                 CollectionRoyaltyData storage collectionData = _collectionRoyaltyData[collection];
                 collectionData.totalVolume += salePrice;
-                collectionData.totalRoyaltyCollected += royaltyAmount;
                 collectionData.lastSyncedBlock = block.number;
                 
                 // Emit detailed attribution event
@@ -584,7 +582,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
      * @param collection The collection address
      * @param tokenIds Array of token IDs involved in sales
      * @param minters Array of minter addresses for each token
-     * @param creator The creator address for the collection
      * @param salePrices Array of sale prices for each transaction
      * @param transactionTimestamps Array of timestamps for each transaction
      * @param transactionHashes Array of transaction hashes for each sale
@@ -594,7 +591,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         address collection,
         uint256[] calldata tokenIds,
         address[] calldata minters,
-        address creator,
         uint256[] calldata salePrices,
         uint256[] calldata transactionTimestamps,
         bytes32[] calldata transactionHashes

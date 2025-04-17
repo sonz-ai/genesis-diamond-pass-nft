@@ -24,12 +24,16 @@
     - [ ] Royalty balance tracking
     - [ ] Merkle root management
     - [ ] Token and collection royalty data structures
+    - [ ] Analytics state variables tracking (`accruedRoyalty`, `claimedRoyalty`, `totalAccruedRoyalty`, `totalClaimedRoyalty`)
   - [ ] Implement core functions
     - [ ] registerCollection
     - [ ] setTokenMinter
     - [ ] batchUpdateRoyaltyData
     - [ ] submitRoyaltyMerkleRoot
     - [ ] claimRoyaltiesMerkle
+    - [ ] Update `batchUpdateRoyaltyData` to update accruedRoyalty and totalAccruedRoyalty
+    - [ ] Update `claimRoyaltiesMerkle` to update claimedRoyalty and totalClaimedRoyalty
+    - [ ] Implement analytics view functions (`totalEarned`, `totalClaimed`, `unclaimed`, `totalAccrued`, `totalUnclaimed`)
   - [ ] Implement ERC20 support functions
     - [ ] addCollectionERC20Royalties
     - [ ] claimERC20RoyaltiesMerkle
@@ -60,6 +64,28 @@
     - [ ] AccessControl
     - [ ] ERC721
 
+### Phase 1A: Minter Status as a Tradable Commodity
+
+- [ ] **DiamondGenesisPass.sol**
+  - [ ] Implement minter status assignment and revocation (owner-only)
+  - [ ] Implement minter status tracking per tokenId
+  - [ ] Implement royalty distribution to minter for each token
+  - [ ] Add events for minter status changes
+  - [ ] Implement minter status transfer logic
+
+- [ ] **Minter Status Bidding System**
+  - [ ] Implement bidding for minter status (per tokenId and collection-wide)
+  - [ ] Track and manage bids (escrow ETH)
+  - [ ] Allow bidders to increase/cancel/withdraw bids
+  - [ ] Implement view functions for all bids per tokenId and collection
+  - [ ] Allow minter to accept highest bid (token or collection)
+  - [ ] On sale:
+    - [ ] Transfer minter status to new owner
+    - [ ] Distribute ETH: 100% royalty from minter status trade to contract owner, remainder to seller
+    - [ ] Refund all other bids
+  - [ ] Add events for bid placement, acceptance, withdrawal, and minter status sale
+  - [ ] Implement security (reentrancy, access control, ETH handling)
+
 ### Phase 2: Testing & Development Tools
 
 - [ ] **Unit Tests**
@@ -68,6 +94,7 @@
   - [ ] NFT contract tests
   - [ ] Access control tests
   - [ ] Merkle verification tests
+  - [ ] Add tests for on-chain analytics (state updates, view functions)
 
 - [ ] **Integration Tests**
   - [ ] Complete flow tests (mint → sale → royalty → claim)
@@ -89,6 +116,7 @@
   - [ ] Implement batchUpdateRoyaltyData call mechanism
   - [ ] Build Merkle tree generation system
   - [ ] Implement submitRoyaltyMerkleRoot call mechanism
+  - [ ] Index on-chain analytics events (`Claimed`, `RoyaltyDataUpdated`) for fallback metrics
 
 - [ ] **Oracle Implementation**
   - [ ] Develop Chainlink node adapter
@@ -101,12 +129,14 @@
   - [ ] Create role management tools
   - [ ] Build royalty monitoring displays
   - [ ] Add Merkle root management tools
+  - [ ] Display on-chain analytics (earned, claimed, unclaimed) via view functions and event indexing
 
 - [ ] **User Claim Interface**
   - [ ] Design user-facing UI
   - [ ] Implement earned royalty displays
   - [ ] Create Merkle proof generation
   - [ ] Build claim transaction interface
+  - [ ] Display user's earned, claimed, and unclaimed royalties via on-chain view functions
 
 ### Phase 4: Deployment & Security
 
