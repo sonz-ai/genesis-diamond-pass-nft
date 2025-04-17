@@ -114,6 +114,13 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     mapping(address => uint256) private _lastOracleUpdateBlock; // collection => block number
     mapping(address => uint256) private _oracleUpdateMinBlockInterval; // collection => block interval
 
+    // NEW: Global analytics state variables tracking
+    uint256 public totalAccruedRoyalty;
+    uint256 public totalClaimedRoyalty;
+
+    // NEW: Mapping to track ERC20 claim status per merkle root
+    mapping(bytes32 => mapping(address => mapping(address => bool))) private _hasClaimedERC20Merkle; // root => recipient => token => claimed
+
     // Role definition
     bytes32 public constant SERVICE_ACCOUNT_ROLE = keccak256("SERVICE_ACCOUNT_ROLE");
 
@@ -126,6 +133,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     // NEW: Events for Merkle distribution
     event MerkleRootSubmitted(address indexed collection, bytes32 indexed merkleRoot, uint256 totalAmountInTree, uint256 timestamp);
     event MerkleRoyaltyClaimed(address indexed recipient, uint256 amount, bytes32 indexed merkleRoot, address indexed collection);
+    event ERC20MerkleRoyaltyClaimed(address indexed recipient, address indexed token, uint256 amount, bytes32 indexed merkleRoot, address collection);
     
     // NEW: Event for detailed royalty attribution
     event RoyaltyAttributed(
@@ -166,9 +174,20 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
      *      For direct marketplaces implementing IERC2981, this will be called automatically.
      */
     receive() external payable virtual {
-        // Marketplace usually doesn't identify the collection in the call, 
-        // so we'll need the off-chain service to attribute this payment later
-        // via batchUpdateRoyaltyData.
+        // Attribute received ETH to the collection if the caller is a registered collection
+        if (_collectionConfigs[msg.sender].registered) {
+            // Increment per‑collection ETH pool
+            _collectionRoyalties[msg.sender] += msg.value;
+
+            // Track total royalties collected for analytics
+            _collectionRoyaltyData[msg.sender].totalRoyaltyCollected += msg.value;
+
+            // Emit event with `msg.sender` as both the collection (recipient of royalties) and sender (originator)
+            emit RoyaltyReceived(msg.sender, _msgSender(), msg.value);
+        }
+        // If the sender is not a registered collection we still accept the ETH, but the
+        // funds remain unattributed until an admin manually allocates them using
+        // `addCollectionRoyalties`.
     }
 
     /**
@@ -440,6 +459,9 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
                 collectionData.totalVolume += salePrice;
                 collectionData.lastSyncedBlock = block.number;
                 
+                // --- On‑chain analytics update ---
+                totalAccruedRoyalty += royaltyAmount;
+
                 // Emit detailed attribution event
                 emit RoyaltyAttributed(
                     collection,
@@ -480,6 +502,9 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         _activeMerkleRoots[collection] = merkleRoot;
         _merkleRootTotalAmount[merkleRoot] = totalAmountInTree;
         _merkleRootSubmissionTime[merkleRoot] = block.timestamp;
+        
+        // --- On‑chain analytics update ---
+        totalAccruedRoyalty += totalAmountInTree;
         
         emit MerkleRootSubmitted(
             collection, 
@@ -537,6 +562,9 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         
         // Transfer amount to recipient
         payable(recipient).sendValue(amount);
+        
+        // --- On‑chain analytics update ---
+        totalClaimedRoyalty += amount;
         
         emit MerkleRoyaltyClaimed(recipient, amount, activeRoot, collection);
     }
@@ -718,6 +746,8 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         }
 
         _collectionRoyalties[collection] += msg.value;
+        // NEW: maintain totalRoyaltyCollected analytics
+        _collectionRoyaltyData[collection].totalRoyaltyCollected += msg.value;
         emit RoyaltyReceived(collection, msg.sender, msg.value);
     }
 
@@ -739,5 +769,69 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         token.safeTransferFrom(msg.sender, address(this), amount);
         _collectionERC20Royalties[collection][token] += amount;
         emit ERC20RoyaltyReceived(collection, address(token), msg.sender, amount);
+    }
+
+    /**
+     * @notice Claim ERC20 royalties using Merkle proof
+     * @dev Similar to claimRoyaltiesMerkle but for ERC20 tokens
+     * @param collection The collection address
+     * @param recipient The address receiving the royalties
+     * @param token The ERC20 token address
+     * @param amount The amount to claim
+     * @param merkleProof The Merkle proof
+     */
+    function claimERC20RoyaltiesMerkle(
+        address collection,
+        address recipient,
+        IERC20 token,
+        uint256 amount,
+        bytes32[] calldata merkleProof
+    ) external nonReentrant {
+        // Get active root for collection (shared across ETH & ERC20).
+        bytes32 activeRoot = _activeMerkleRoots[collection];
+
+        if (activeRoot == bytes32(0)) {
+            revert RoyaltyDistributor__NoActiveMerkleRoot();
+        }
+
+        if (_hasClaimedERC20Merkle[activeRoot][recipient][address(token)]) {
+            revert RoyaltyDistributor__AlreadyClaimed();
+        }
+
+        // Leaf includes token to avoid collision between different tokens
+        bytes32 leaf = keccak256(abi.encodePacked(recipient, address(token), amount));
+        bool validProof = MerkleProof.verify(merkleProof, activeRoot, leaf);
+
+        if (!validProof) {
+            revert RoyaltyDistributor__InvalidProof();
+        }
+
+        // Mark as claimed
+        _hasClaimedERC20Merkle[activeRoot][recipient][address(token)] = true;
+
+        // Ensure royalty pool has enough tokens
+        if (_collectionERC20Royalties[collection][token] < amount) {
+            revert RoyaltyDistributor__NotEnoughTokensToDistributeForCollection();
+        }
+
+        // Reduce pool
+        _collectionERC20Royalties[collection][token] -= amount;
+
+        // Transfer tokens to recipient
+        token.safeTransfer(recipient, amount);
+
+        // No ETH analytics increment since token claim
+
+        emit ERC20MerkleRoyaltyClaimed(recipient, address(token), amount, activeRoot, collection);
+    }
+
+    // --- Analytics view functions ---
+
+    function totalAccrued() external view returns (uint256) {
+        return totalAccruedRoyalty;
+    }
+
+    function totalClaimed() external view returns (uint256) {
+        return totalClaimedRoyalty;
     }
 }

@@ -1,4 +1,6 @@
 ## Design Document: Diamond Genesis Pass Royalty System
+We are using forge
+Forge build, forge test
 
 **1. Introduction**
 

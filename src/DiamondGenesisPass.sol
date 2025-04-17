@@ -41,7 +41,7 @@ contract DiamondGenesisPass is
     uint256 private constant CREATOR_SHARES = 8000; // 80% in basis points
     
     // Public mint price in ETH
-    uint256 public constant PUBLIC_MINT_PRICE = 0.28 ether;
+    uint256 public constant PUBLIC_MINT_PRICE = 0.1 ether;
     
     // Boolean to control if public minting is active
     bool private isPublicMintActive;
@@ -80,7 +80,9 @@ contract DiamondGenesisPass is
     // event TreasuryAddressUpdated(address indexed newTreasuryAddress); // REMOVED event
     // RoyaltyDistributorSet and RoyaltyFeeNumeratorSet events are emitted by the adapter's constructor
     // BaseURISet and SuffixURISet events are emitted by the parent MetadataURI contract
-    
+    event CollectionRegistered(address indexed collection, uint96 royaltyFeeNumerator, address creator);
+    event RegistrationFailed(address indexed collection, string reason);
+
     // Role definition
     bytes32 public constant SERVICE_ACCOUNT_ROLE = keccak256("SERVICE_ACCOUNT_ROLE");
     
@@ -114,9 +116,15 @@ contract DiamondGenesisPass is
             MINTER_SHARES,
             CREATOR_SHARES,
             creator_
-        ) {}
-        catch {
-            revert("Failed to register collection with distributor");
+        ) {
+            // successful registration
+            emit CollectionRegistered(address(this), royaltyFeeNumerator_, creator_);
+        } catch Error(string memory reason) {
+            // Log the error for debugging purposes
+            emit RegistrationFailed(address(this), reason);
+        } catch {
+            // If registration fails with no reason, we still log the failure
+            emit RegistrationFailed(address(this), "Unknown error");
         }
     }
 
@@ -428,5 +436,38 @@ contract DiamondGenesisPass is
         if (msg.sender != owner()) { 
             revert CallerIsNotOwner();
         }
+    }
+
+    // --- Admin Functions ---
+
+    /**
+     * @notice Sets the Merkle root for whitelist minting
+     * @dev Only callable by the contract owner.
+     * @param merkleRoot_ The new Merkle root
+     */
+    function setMerkleRoot(bytes32 merkleRoot_) external onlyOwner {
+        merkleRoot = merkleRoot_;
+        emit MerkleRootSet(merkleRoot_);
+    }
+
+    /**
+     * @notice Enable or disable public minting
+     * @dev Only callable by the contract owner.
+     * @param isActive Boolean flag controlling public mint status
+     */
+    function setPublicMintActive(bool isActive) external onlyOwner {
+        isPublicMintActive = isActive;
+        emit PublicMintStatusUpdated(isActive);
+    }
+
+    /**
+     * @notice Record a secondary sale for royalty tracking
+     * @dev Only callable by owner or service account
+     * @param tokenId The token ID that was sold
+     * @param salePrice The sale price
+     */
+    function recordSale(uint256 tokenId, uint256 salePrice) external onlyOwnerOrServiceAccount {
+        require(_exists(tokenId), "Token does not exist");
+        emit SaleRecorded(address(this), tokenId, salePrice);
     }
 }
