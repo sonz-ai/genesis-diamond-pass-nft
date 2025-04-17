@@ -55,7 +55,7 @@ contract CentralizedRoyaltyDistributorERC20FlowTest is Test {
 
         // Submit Merkle root
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, amount);
+        distributor.submitRoyaltyMerkleRoot(address(nft), root, 0); // Change to 0 since we're testing ERC20, not ETH
 
         // Claim tokens
         vm.prank(user);
@@ -83,7 +83,7 @@ contract CentralizedRoyaltyDistributorERC20FlowTest is Test {
         uint256 claimAmount = 5 ether;
         bytes32 root = keccak256(abi.encodePacked(address(user), address(token), claimAmount));
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, claimAmount);
+        distributor.submitRoyaltyMerkleRoot(address(nft), root, 0); // Change to 0 since we're testing ERC20, not ETH
 
         // Attempt claim with bad proof
         vm.prank(user);
@@ -106,7 +106,7 @@ contract CentralizedRoyaltyDistributorERC20FlowTest is Test {
         bytes32 leaf = keccak256(abi.encodePacked(address(user), address(token), claimAmount));
         bytes32 root = leaf;
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, claimAmount);
+        distributor.submitRoyaltyMerkleRoot(address(nft), root, 0); // Change to 0 since we're testing ERC20, not ETH
 
         // Claim should revert
         vm.prank(user);

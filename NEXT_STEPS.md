@@ -24,25 +24,52 @@ Based on the design, implementation and testing plans, and current code, here ar
   - [x] Analytics views (`unclaimed`, `totalAccrued`, `totalClaimed`)
   - [x] Access control and reentrancy on all restricted functions
 - Integration tests:
-  - [ ] Full lifecycle: mint → sale → `batchUpdateRoyaltyData` → `submitRoyaltyMerkleRoot` → claims
-  - [ ] Multi‑collection isolation
-  - [ ] ERC20 and oracle end‑to‑end flows
+  - [x] Full lifecycle: mint → sale → `batchUpdateRoyaltyData` → `submitRoyaltyMerkleRoot` → claims
+  - [x] Multi‑collection isolation
+  - [x] ERC20 and oracle end‑to‑end flows
 
 ## Off-Chain Services & Tools
 
-- Batch Price Discovery & Royalty Service
-- Merkle tree generator and proof CLI
-- Chainlink oracle adapter and job specs
-- Deployment and Merkle submission scripts
+- [ ] Batch Price Discovery & Royalty Service
+  - [ ] Transfer event monitoring script
+  - [ ] Marketplace API integration
+  - [ ] Royalty calculation logic
+- [ ] Merkle tree generator and proof CLI
+  - [ ] Generate Merkle trees from royalty data
+  - [ ] Create proofs for claiming
+- [ ] Chainlink oracle adapter and job specs
+  - [ ] Oracle node configuration
+  - [ ] Job specification for royalty data
+- [ ] Deployment and Merkle submission scripts
+  - [ ] Testnet deployment script
+  - [ ] Mainnet deployment script
+  - [ ] Merkle root submission script
 
 ## Deployment & Security
 
-- Write deployment scripts for testnet and mainnet
-- Configure multisig roles and access transfers
-- Prepare gas profiling and audit checklist
+- [ ] Write deployment scripts for testnet and mainnet
+  - [ ] Deploy distributor contract
+  - [ ] Deploy NFT contract
+  - [ ] Register collection
+  - [ ] Transfer ownership to multisig
+- [ ] Configure multisig roles and access transfers
+  - [ ] Set up multisig as owner
+  - [ ] Configure service account roles
+- [ ] Prepare gas profiling and audit checklist
+  - [ ] Optimize gas usage for key functions
+  - [ ] Security audit preparation
 
 ## Documentation
 
-- Update README with setup, usage, test, and deploy instructions
-- Add admin and user guides for claim UI
-- Document off‑chain architecture and APIs
+- [ ] Update README with setup, usage, test, and deploy instructions
+  - [ ] Project overview
+  - [ ] Installation and setup
+  - [ ] Testing instructions
+  - [ ] Deployment guide
+- [ ] Add admin and user guides for claim UI
+  - [ ] Admin dashboard guide
+  - [ ] User claim interface guide
+- [ ] Document off‑chain architecture and APIs
+  - [ ] Architecture diagram
+  - [ ] API documentation
+  - [ ] Integration guide
