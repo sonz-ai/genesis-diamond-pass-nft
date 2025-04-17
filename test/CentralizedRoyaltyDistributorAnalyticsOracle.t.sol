@@ -5,14 +5,15 @@ import "forge-std/Test.sol";
 import "src/programmable-royalties/CentralizedRoyaltyDistributor.sol";
 import "src/DiamondGenesisPass.sol";
 
-// Emitted events
-contract Emitted {
-    event OracleUpdateIntervalSet(address indexed collection, uint256 minBlockInterval);
-}
+// We don't need this contract anymore since we'll use the event from the distributor directly
+// // Emitted events
+// contract Emitted {
+//     event OracleUpdateIntervalSet(address indexed collection, uint256 minBlockInterval);
+// }
 
 contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
     // Declare event signature for expectEmit
-    Emitted emitted;
+    // Emitted emitted; // Remove this line
     CentralizedRoyaltyDistributor distributor;
     DiamondGenesisPass nft;
     address admin = address(0xA11CE);
@@ -20,6 +21,9 @@ contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
     address creator = address(0xC0FFEE);
     address user = address(0x1234);
     uint96 royaltyNum = 500; // 5%
+    
+    // Redeclare the event for testing
+    event OracleUpdateIntervalSet(address indexed collection, uint256 minBlockInterval);
 
     function setUp() public {
         // Deploy and configure distributor
@@ -44,7 +48,9 @@ contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
         assertEq(distributor.getCollectionRoyalties(address(nft)), 0);
         (uint256 vol, uint256 lastBlock, uint256 collected) = distributor.getCollectionRoyaltyData(address(nft));
         assertEq(vol, 0);
-        assertEq(lastBlock, 0);
+        // Block number should be set during registration in setUp
+        uint256 expectedBlock = block.number; 
+        assertEq(lastBlock, expectedBlock);
         assertEq(collected, 0);
 
         // Merkle root and claims
@@ -58,8 +64,8 @@ contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
     function testSetOracleIntervalAndUnauthorized() public {
         // Only admin can set interval
         vm.prank(admin);
-        vm.expectEmit(true, true, false, true, address(this));
-        emit Emitted.OracleUpdateIntervalSet(address(nft), 3);
+        vm.expectEmit(true, true, false, true, address(distributor));
+        emit OracleUpdateIntervalSet(address(nft), 3);
         distributor.setOracleUpdateMinBlockInterval(address(nft), 3);
 
         // Non-admin revert

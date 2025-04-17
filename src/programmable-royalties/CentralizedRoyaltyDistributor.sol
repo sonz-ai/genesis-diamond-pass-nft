@@ -444,7 +444,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             if (royaltyAmount > 0) {
                 // Calculate shares
                 uint256 minterShare = (royaltyAmount * config.minterShares) / SHARES_DENOMINATOR;
-                uint256 creatorShare = royaltyAmount - minterShare; // Avoid rounding errors
+                uint256 creatorShare = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
                 
                 // Update token data
                 tokenData.transactionCount++;
@@ -502,9 +502,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         _activeMerkleRoots[collection] = merkleRoot;
         _merkleRootTotalAmount[merkleRoot] = totalAmountInTree;
         _merkleRootSubmissionTime[merkleRoot] = block.timestamp;
-        
-        // --- On‑chain analytics update ---
-        totalAccruedRoyalty += totalAmountInTree;
         
         emit MerkleRootSubmitted(
             collection, 

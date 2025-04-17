@@ -371,14 +371,18 @@ contract DiamondGenesisPass is
     }
 
     /**
-     * @notice Internal safe mint function override.
-     * @dev Registers the minter with the centralized distributor before calling super._safeMint.
+     * @notice Internal safeMint function override.
+     * @dev Follows the OpenZeppelin standard implementation pattern.
      */
     function _safeMint(address to, uint256 tokenId) internal virtual override {
-        centralizedDistributor.setTokenMinter(address(this), tokenId, to);
-        super._safeMint(to, tokenId);
+        _safeMint(to, tokenId, "");
     }
-     function _safeMint(address to, uint256 tokenId, bytes memory data) internal virtual override {
+
+    /**
+     * @notice Internal safeMint function override with data parameter.
+     * @dev We register the minter with distributor and then call the parent implementation.
+     */
+    function _safeMint(address to, uint256 tokenId, bytes memory data) internal virtual override {
         centralizedDistributor.setTokenMinter(address(this), tokenId, to);
         super._safeMint(to, tokenId, data);
     }

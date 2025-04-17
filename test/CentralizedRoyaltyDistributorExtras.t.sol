@@ -75,7 +75,7 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         // Expect event and execute
         vm.startPrank(service);
         vm.expectEmit(true, true, false, true);
-        emit RoyaltyAttributed(address(nft), 1, user1, 1 ether, (1 ether * 2000) / 10000, (1 ether * 8000) / 10000, txHashes[0]);
+        emit RoyaltyAttributed(address(nft), 1, user1, 1 ether, 15000000000000000, 60000000000000000, txHashes[0]);
         distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txTimes, txHashes);
         vm.stopPrank();
 

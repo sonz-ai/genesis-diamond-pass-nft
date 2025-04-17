@@ -145,12 +145,12 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         // Create a simple Merkle root for minter to claim all royalties
         bytes32 leaf = keccak256(abi.encodePacked(minter, actualRoyaltyAccrued));
         
-        // Submit the Merkle root - this will accrue royalties AGAIN
+        // Submit the Merkle root - this should NOT double-count anymore
         vm.prank(service);
         distributor.submitRoyaltyMerkleRoot(address(nft), leaf, actualRoyaltyAccrued);
         
-        // Verify totalAccrued was updated again (doubled)
-        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot + actualRoyaltyAccrued);
+        // Verify totalAccrued was NOT updated again (no double counting)
+        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot);
         
         // Check collection data after adding royalties
         (uint256 volume, uint256 lastBlock, uint256 collected) = distributor.getCollectionRoyaltyData(address(nft));
@@ -162,8 +162,8 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         vm.prank(minter);
         distributor.claimRoyaltiesMerkle(address(nft), minter, actualRoyaltyAccrued, new bytes32[](0));
         
-        // Verify analytics after claim (note: totalAccrued now includes BOTH accruals)
-        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot + actualRoyaltyAccrued);
+        // Verify analytics after claim
+        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot);
         assertEq(distributor.totalClaimed(), actualRoyaltyAccrued);
     }
     
@@ -219,19 +219,19 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         bytes32[] memory minterProof = merkle.getProof(data, 0);
         bytes32[] memory creatorProof = merkle.getProof(data, 1);
         
-        // Submit the Merkle root - this will accrue royalties AGAIN
+        // Submit the Merkle root - this should NOT accrue royalties again
         vm.prank(service);
         distributor.submitRoyaltyMerkleRoot(address(nft), root, actualRoyaltyAccrued);
         
-        // Verify double accrual
-        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot + actualRoyaltyAccrued);
+        // Verify NO double accrual
+        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot);
         
         // Minter claims their share
         vm.prank(minter);
         distributor.claimRoyaltiesMerkle(address(nft), minter, minterShare, minterProof);
         
         // Verify analytics after partial claim
-        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot + actualRoyaltyAccrued);
+        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot);
         assertEq(distributor.totalClaimed(), minterShare);
         
         // Creator claims their share
@@ -239,7 +239,7 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         distributor.claimRoyaltiesMerkle(address(nft), creator, creatorShare, creatorProof);
         
         // Verify analytics after all claims
-        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot + actualRoyaltyAccrued);
+        assertEq(distributor.totalAccrued(), accruedBeforeMerkleRoot);
         assertEq(distributor.totalClaimed(), actualRoyaltyAccrued);
     }
 } 

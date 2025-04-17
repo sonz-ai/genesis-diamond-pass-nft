@@ -76,10 +76,13 @@ Forge build, forge test
   - [x] Merkle verification tests
   - [x] Add tests for on-chain analytics (state updates, view functions)
 
-- [x] **Integration Tests**
+- [ ] **Integration Tests**
   - [x] Complete flow tests (mint → sale → royalty → claim)
   - [x] Multi-collection tests
   - [x] Oracle flow tests
+  - [ ] Fix failing tests for double-counting in analytics
+  - [ ] Fix tests for DiamondGenesisPass role management
+  - [ ] Address other integration test failures
 
 - [x] **Development Scripts**
   - [x] Deployment scripts
