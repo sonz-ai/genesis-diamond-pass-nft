@@ -61,15 +61,15 @@ Based on the design, implementation and testing plans, and current code, here ar
 
 ## Documentation
 
-- [ ] Update README with setup, usage, test, and deploy instructions
-  - [ ] Project overview
-  - [ ] Installation and setup
-  - [ ] Testing instructions
-  - [ ] Deployment guide
-- [ ] Add admin and user guides for claim UI
-  - [ ] Admin dashboard guide
-  - [ ] User claim interface guide
-- [ ] Document off‑chain architecture and APIs
-  - [ ] Architecture diagram
-  - [ ] API documentation
-  - [ ] Integration guide
+- [x] Update README with setup, usage, test, and deploy instructions
+  - [x] Project overview
+  - [x] Installation and setup
+  - [x] Testing instructions
+  - [x] Deployment guide
+- [x] Add admin and user guides for claim UI
+  - [x] Admin dashboard guide
+  - [x] User claim interface guide
+- [x] Document off‑chain architecture and APIs
+  - [x] Architecture diagram
+  - [x] API documentation
+  - [x] Integration guide
