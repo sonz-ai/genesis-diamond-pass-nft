@@ -4,29 +4,34 @@ Based on the design, implementation and testing plans, and current code, here ar
 
 ## Smart Contracts
 
-- CentralizedRoyaltyDistributor.sol
+- [x] CentralizedRoyaltyDistributor.sol
   - [x] Implement ERC20 support: `addCollectionERC20Royalties`, `claimERC20RoyaltiesMerkle`
   - [x] Add oracle methods: `updateRoyaltyDataViaOracle`, `fulfillRoyaltyData`
   - [x] Finalize analytics: update `totalAccruedRoyalty`, `totalClaimedRoyalty`, add view functions `totalAccrued()`, `totalClaimed()`
-- DiamondGenesisPass.sol
+  - [ ] **Fix double-counting issue**: The contract currently counts royalties twice - once in `batchUpdateRoyaltyData` and again in `submitRoyaltyMerkleRoot`. This causes inconsistencies and failing tests. Update the contract to avoid this double-counting.
+- [x] DiamondGenesisPass.sol
   - [x] Complete mint functions: `whitelistMint`, `safeMint`, `ownerMint` with proper perks and events
   - [x] Ensure `onlyOwnerOrServiceAccount` guards metadata, burn, and sale-recording operations
   - [x] Verify payment routing to owner and emit `SaleRecorded`
   - [x] Handle `registerCollection` fallback behavior and error logging
-- CentralizedRoyaltyAdapter.sol
+- [x] CentralizedRoyaltyAdapter.sol
   - [x] Validate interface compliance and gas optimizations
 
 ## Testing
 
-- Unit tests:
+- [x] Unit tests:
   - [x] ERC20 royalty flow
   - [x] Oracle functions with mock Chainlink
-  - [x] Analytics views (`unclaimed`, `totalAccrued`, `totalClaimed`)
+  - [x] Analytics views (`totalAccrued`, `totalClaimed`)
   - [x] Access control and reentrancy on all restricted functions
-- Integration tests:
+- [x] Integration tests:
   - [x] Full lifecycle: mint → sale → `batchUpdateRoyaltyData` → `submitRoyaltyMerkleRoot` → claims
   - [x] Multi‑collection isolation
   - [x] ERC20 and oracle end‑to‑end flows
+- [ ] Fix failing tests:
+  - [ ] Update tests affected by double-counting in analytics
+  - [ ] Fix tests for DiamondGenesisPass role management
+  - [ ] Address other integration test failures
 
 ## Off-Chain Services & Tools
 

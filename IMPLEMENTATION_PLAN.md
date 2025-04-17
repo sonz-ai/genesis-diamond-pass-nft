@@ -19,73 +19,73 @@ Forge build, forge test
 
 ### Phase 1: Smart Contract Development
 
-- [ ] **CentralizedRoyaltyDistributor.sol**
-  - [ ] Implement state variables
-    - [ ] Collection configs mapping
-    - [ ] Minters tracking
-    - [ ] Royalty balance tracking
-    - [ ] Merkle root management
-    - [ ] Token and collection royalty data structures
-    - [ ] Analytics state variables tracking (`totalAccruedRoyalty`, `totalClaimedRoyalty`)
-  - [ ] Implement core functions
-    - [ ] registerCollection
-    - [ ] setTokenMinter
-    - [ ] batchUpdateRoyaltyData
-    - [ ] submitRoyaltyMerkleRoot
-    - [ ] claimRoyaltiesMerkle
-    - [ ] Update `batchUpdateRoyaltyData` to update `totalAccruedRoyalty`
-    - [ ] Update `claimRoyaltiesMerkle` to update `totalClaimedRoyalty`
-    - [ ] Implement analytics view functions (`totalAccrued`, `totalClaimed`)
-  - [ ] Implement ERC20 support functions
-    - [ ] addCollectionERC20Royalties
-    - [ ] claimERC20RoyaltiesMerkle
-  - [ ] Implement oracle interaction functions
-    - [ ] updateRoyaltyDataViaOracle
-    - [ ] setOracleUpdateMinBlockInterval
-    - [ ] fulfillRoyaltyData
-  - [ ] Implement events for all key operations
-  - [ ] Add OpenZeppelin dependencies
-    - [ ] AccessControl
-    - [ ] ReentrancyGuard
+- [x] **CentralizedRoyaltyDistributor.sol**
+  - [x] Implement state variables
+    - [x] Collection configs mapping
+    - [x] Minters tracking
+    - [x] Royalty balance tracking
+    - [x] Merkle root management
+    - [x] Token and collection royalty data structures
+    - [x] Analytics state variables tracking (`totalAccruedRoyalty`, `totalClaimedRoyalty`)
+  - [x] Implement core functions
+    - [x] registerCollection
+    - [x] setTokenMinter
+    - [x] batchUpdateRoyaltyData
+    - [x] submitRoyaltyMerkleRoot
+    - [x] claimRoyaltiesMerkle
+    - [x] Update `batchUpdateRoyaltyData` to update `totalAccruedRoyalty`
+    - [x] Update `claimRoyaltiesMerkle` to update `totalClaimedRoyalty`
+    - [x] Implement analytics view functions (`totalAccrued`, `totalClaimed`)
+  - [x] Implement ERC20 support functions
+    - [x] addCollectionERC20Royalties
+    - [x] claimERC20RoyaltiesMerkle
+  - [x] Implement oracle interaction functions
+    - [x] updateRoyaltyDataViaOracle
+    - [x] setOracleUpdateMinBlockInterval
+    - [x] fulfillRoyaltyData
+  - [x] Implement events for all key operations
+  - [x] Add OpenZeppelin dependencies
+    - [x] AccessControl
+    - [x] ReentrancyGuard
 
-- [ ] **CentralizedRoyaltyAdapter.sol**
-  - [ ] Define interface for NFT contract interaction
-  - [ ] Implement royaltyInfo pattern pointing to distributor
-  - [ ] Add helper view functions for royalty queries
+- [x] **CentralizedRoyaltyAdapter.sol**
+  - [x] Define interface for NFT contract interaction
+  - [x] Implement royaltyInfo pattern pointing to distributor
+  - [x] Add helper view functions for royalty queries
 
-- [ ] **DiamondGenesisPass.sol**
-  - [ ] Implement ERC721 functionality
-  - [ ] Integrate CentralizedRoyaltyAdapter
-  - [ ] Implement minting functions
-    - [ ] whitelistMint
-    - [ ] mint (public)
-    - [ ] ownerMint (restricted)
-  - [ ] Implement direct payment routing to owner
-  - [ ] Add OpenZeppelin dependencies
-    - [ ] Ownable
-    - [ ] AccessControl
-    - [ ] ERC721
+- [x] **DiamondGenesisPass.sol**
+  - [x] Implement ERC721 functionality
+  - [x] Integrate CentralizedRoyaltyAdapter
+  - [x] Implement minting functions
+    - [x] whitelistMint
+    - [x] mint (public)
+    - [x] ownerMint (restricted)
+  - [x] Implement direct payment routing to owner
+  - [x] Add OpenZeppelin dependencies
+    - [x] Ownable
+    - [x] AccessControl
+    - [x] ERC721
 
 ### Phase 2: Testing & Development Tools
 
-- [ ] **Unit Tests**
-  - [ ] Distributor contract tests
-  - [ ] Adapter pattern tests
-  - [ ] NFT contract tests
-  - [ ] Access control tests
-  - [ ] Merkle verification tests
-  - [ ] Add tests for on-chain analytics (state updates, view functions)
+- [x] **Unit Tests**
+  - [x] Distributor contract tests
+  - [x] Adapter pattern tests
+  - [x] NFT contract tests
+  - [x] Access control tests
+  - [x] Merkle verification tests
+  - [x] Add tests for on-chain analytics (state updates, view functions)
 
-- [ ] **Integration Tests**
-  - [ ] Complete flow tests (mint → sale → royalty → claim)
-  - [ ] Multi-collection tests
-  - [ ] Oracle flow tests
+- [x] **Integration Tests**
+  - [x] Complete flow tests (mint → sale → royalty → claim)
+  - [x] Multi-collection tests
+  - [x] Oracle flow tests
 
-- [ ] **Development Scripts**
-  - [ ] Deployment scripts
-  - [ ] Configuration scripts
-  - [ ] Merkle tree generation utilities
-  - [ ] Test helpers for marketplace sales simulation
+- [x] **Development Scripts**
+  - [x] Deployment scripts
+  - [x] Configuration scripts
+  - [x] Merkle tree generation utilities
+  - [x] Test helpers for marketplace sales simulation
 
 ### Phase 3: Off-Chain Services
 
