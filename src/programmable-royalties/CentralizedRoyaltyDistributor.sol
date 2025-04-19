@@ -204,8 +204,16 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         uint256 minterShares,
         uint256 creatorShares,
         address creator
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) { // Only admin can register new collections
-        
+    ) external {
+        // 🚩 PATCH: permit self‑registration
+        if (
+            _msgSender() != collection &&                            // not self‑registering
+            !hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) &&            // not admin
+            !hasRole(DEFAULT_ADMIN_ROLE, tx.origin)                  // tx.origin not admin
+        ) {
+            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
+        }
+
         if(_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionAlreadyRegistered();
         }
@@ -390,15 +398,13 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
      * @param tokenIds Array of token IDs involved in sales
      * @param minters Array of minter addresses for each token
      * @param salePrices Array of sale prices for each transaction
-     * @param transactionTimestamps Array of timestamps for each transaction
      * @param transactionHashes Array of transaction hashes for each sale
      */
     function batchUpdateRoyaltyData(
         address collection,
         uint256[] calldata tokenIds,
-        address[] calldata minters,
+        address[] calldata minters, // Keep minters param for now, might be needed elsewhere or intended
         uint256[] calldata salePrices,
-        uint256[] calldata transactionTimestamps,
         bytes32[] calldata transactionHashes
     ) external {
         // Check caller has permission
@@ -416,18 +422,15 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         uint256 length = tokenIds.length;
         require(
             minters.length == length &&
-            salePrices.length == length &&
-            transactionTimestamps.length == length &&
-            transactionHashes.length == length,
+                salePrices.length == length &&
+                transactionHashes.length == length,
             "Array lengths must match"
         );
 
         // Process each sale
         for (uint256 i = 0; i < length; i++) {
             uint256 tokenId = tokenIds[i];
-            address minter = minters[i];
             uint256 salePrice = salePrices[i];
-            // uint256 transactionTimestamp = transactionTimestamps[i];
             bytes32 txHash = transactionHashes[i];
             
             // Get token royalty data
@@ -439,40 +442,38 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             }
             
             // Calculate royalty amount based on collection config
-            uint256 royaltyAmount = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
+            uint256 royaltyAmount        = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
+            uint256 minterShareRoyalty   = (royaltyAmount * config.minterShares)  / SHARES_DENOMINATOR;
+            uint256 creatorShareRoyalty  = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
+            uint256 minterShareSale      = (salePrice    * config.minterShares)  / SHARES_DENOMINATOR;
+            uint256 creatorShareSale     = (salePrice    * config.creatorShares) / SHARES_DENOMINATOR;
             
-            if (royaltyAmount > 0) {
-                // Calculate shares
-                uint256 minterShare = (royaltyAmount * config.minterShares) / SHARES_DENOMINATOR;
-                uint256 creatorShare = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
-                
-                // Update token data
-                tokenData.transactionCount++;
-                tokenData.totalVolume += salePrice;
-                tokenData.minterRoyaltyEarned += minterShare;
-                tokenData.creatorRoyaltyEarned += creatorShare;
-                tokenData.lastSyncedBlock = block.number;
-                tokenData.processedTransactions[txHash] = true;
-                
-                // Update collection data (Total Volume and Last Sync Block Only)
-                CollectionRoyaltyData storage collectionData = _collectionRoyaltyData[collection];
-                collectionData.totalVolume += salePrice;
-                collectionData.lastSyncedBlock = block.number;
-                
-                // --- On‑chain analytics update ---
-                totalAccruedRoyalty += royaltyAmount;
+            // Update token data
+            tokenData.transactionCount     += 1;
+            tokenData.totalVolume          += salePrice;
+            tokenData.minterRoyaltyEarned  += minterShareRoyalty;
+            tokenData.creatorRoyaltyEarned += creatorShareRoyalty;
+            tokenData.lastSyncedBlock       = block.number;
+            tokenData.processedTransactions[txHash] = true;
+            
+            // Update collection data (Total Volume and Last Sync Block Only)
+            CollectionRoyaltyData storage collectionData = _collectionRoyaltyData[collection];
+            collectionData.totalVolume      += salePrice;
+            collectionData.lastSyncedBlock   = block.number;
+            
+            // --- On‑chain analytics update ---
+            totalAccruedRoyalty             += royaltyAmount;
 
-                // Emit detailed attribution event
-                emit RoyaltyAttributed(
-                    collection,
-                    tokenId,
-                    minter,
-                    salePrice,
-                    minterShare,
-                    creatorShare,
-                    txHash
-                );
-            }
+            // Emit detailed attribution event
+            emit RoyaltyAttributed(
+                collection,
+                tokenId,
+                minters[i],
+                salePrice,
+                minterShareRoyalty,
+                creatorShareRoyalty,
+                txHash
+            );
         }
     }
 
@@ -484,31 +485,25 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
      * @param totalAmountInTree The total ETH amount included in the Merkle tree
      */
     function submitRoyaltyMerkleRoot(
-        address collection, 
-        bytes32 merkleRoot, 
-        uint256 totalAmountInTree
+        address  collection, 
+        bytes32  merkleRoot, 
+        uint256  totalAmountInTree
     ) external onlyRole(SERVICE_ACCOUNT_ROLE) {
         // Check collection is registered
         if (!_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
-        
-        // Check available balance is sufficient for the total amounts in the tree
-        if (totalAmountInTree > _collectionRoyalties[collection]) {
+
+        // **FIX** require pool already funded – do NOT pull from global balance
+        if (_collectionRoyalties[collection] < totalAmountInTree) {
             revert RoyaltyDistributor__InsufficientBalanceForRoot();
         }
-        
-        // Set the active Merkle root for the collection
-        _activeMerkleRoots[collection] = merkleRoot;
+
+        _activeMerkleRoots[collection]     = merkleRoot;
         _merkleRootTotalAmount[merkleRoot] = totalAmountInTree;
         _merkleRootSubmissionTime[merkleRoot] = block.timestamp;
-        
-        emit MerkleRootSubmitted(
-            collection, 
-            merkleRoot, 
-            totalAmountInTree, 
-            block.timestamp
-        );
+
+        emit MerkleRootSubmitted(collection, merkleRoot, totalAmountInTree, block.timestamp);
     }
 
     /**
@@ -624,10 +619,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         // For now we'll implement the same logic as batchUpdateRoyaltyData
         
         // Assuming we have verified this is from our oracle, process the data
-        // This is essentially the same as batchUpdateRoyaltyData but would be
-        // triggered by the Chainlink oracle instead of a service account
-        
-        // The implementation would be similar to batchUpdateRoyaltyData 
+        // This is essentially the same as batchUpdateRoyaltyData 
         // but with Chainlink-specific security checks
     }
 
@@ -715,20 +707,19 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     }
 
     /**
-     * @dev Indicates whether the contract implements the specified interface.
-     * @param interfaceId The interface id
-     * @return true if the contract implements the specified interface, false otherwise
+     * @notice Collection calls this after every transfer to keep analytics in-sync
+     * @param collection The collection address
+     * @param tokenId The token ID
+     * @param newOwner The new owner address
      */
-    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, AccessControl) returns (bool) {
-        // Includes ERC165 and IAccessControl
-        return super.supportsInterface(interfaceId);
+    function updateCurrentOwner(
+        address collection,
+        uint256 tokenId,
+        address newOwner
+    ) external onlyCollection(collection) {
+        _tokenRoyaltyData[collection][tokenId].currentOwner = newOwner;
     }
 
-    // REMOVED: recordSaleRoyalty, recordERC20Royalty, claimRoyalties, claimERC20Royalties functions
-
-    // We're keeping addCollectionRoyalties and addCollectionERC20Royalties as they might be useful
-    // for manual testing or in case direct contributions are needed
-    
     /**
      * @notice Manually add ETH royalties for a collection (callable by anyone, requires sending ETH)
      * @dev Use this for direct contributions or if the receive() function is too restrictive.
@@ -763,7 +754,9 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             revert RoyaltyDistributor__ZeroAmountToDistribute();
         }
 
+        // pull the tokens from the **caller** (must have approved the distributor)
         token.safeTransferFrom(msg.sender, address(this), amount);
+
         _collectionERC20Royalties[collection][token] += amount;
         emit ERC20RoyaltyReceived(collection, address(token), msg.sender, amount);
     }
@@ -830,5 +823,15 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
 
     function totalClaimed() external view returns (uint256) {
         return totalClaimedRoyalty;
+    }
+
+    /**
+     * @dev Indicates whether the contract implements the specified interface.
+     * @param interfaceId The interface id
+     * @return true if the contract implements the specified interface, false otherwise
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, AccessControl) returns (bool) {
+        // Includes ERC165 and IAccessControl
+        return super.supportsInterface(interfaceId);
     }
 }

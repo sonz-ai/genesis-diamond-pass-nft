@@ -28,7 +28,9 @@ contract FullLifecycleRoyaltyFlowTest is Test {
         
         // Deploy NFT contract and register with distributor
         nft = new DiamondGenesisPass(address(distributor), royaltyFee, creator);
-        distributor.registerCollection(address(nft), royaltyFee, 2000, 8000, creator);
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), royaltyFee, 2000, 8000, creator);
+        }
         
         // Set up NFT for minting
         nft.setPublicMintActive(true);
@@ -73,13 +75,11 @@ contract FullLifecycleRoyaltyFlowTest is Test {
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
-        uint256[] memory timestamps = new uint256[](1);
         bytes32[] memory txHashes = new bytes32[](1);
         
         tokenIds[0] = 1;
         minters[0] = buyer1; // Original minter
         salePrices[0] = salePrice;
-        timestamps[0] = block.timestamp;
         txHashes[0] = keccak256(abi.encodePacked("sale1"));
         
         vm.prank(service);
@@ -88,7 +88,6 @@ contract FullLifecycleRoyaltyFlowTest is Test {
             tokenIds,
             minters,
             salePrices,
-            timestamps,
             txHashes
         );
         

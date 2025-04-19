@@ -27,12 +27,18 @@ contract DiamondGenesisPassMintTest is Test {
     bytes32[] leaves;
     
     function setUp() public {
-        // Deploy contracts
+        // Deploy distributor with admin as owner
         vm.startPrank(admin);
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
+        
+        // Deploy NFT contract
         nft = new DiamondGenesisPass(address(distributor), 750, creator);
-        distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        
+        // Only register if not already registered in constructor
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        }
         
         // Set up roles
         nft.grantRole(nft.SERVICE_ACCOUNT_ROLE(), service);
@@ -70,16 +76,16 @@ contract DiamondGenesisPassMintTest is Test {
         }
         
         // Create merkle tree (simple approach for testing)
-        bytes32 merkleRoot;
+        bytes32 localMerkleRoot;
         if (leaves.length == 1) {
-            merkleRoot = leaves[0];
+            localMerkleRoot = leaves[0];
         } else if (leaves.length == 2) {
-            merkleRoot = keccak256(abi.encodePacked(leaves[0], leaves[1]));
+            localMerkleRoot = keccak256(abi.encodePacked(leaves[0], leaves[1]));
         } else if (leaves.length == 3) {
             // For 3 leaves, we'll create a balanced tree
             bytes32 leaf01 = keccak256(abi.encodePacked(leaves[0], leaves[1]));
             bytes32 leaf2withDuplicate = keccak256(abi.encodePacked(leaves[2], leaves[2])); // Duplicate leaf[2] for balance
-            merkleRoot = keccak256(abi.encodePacked(leaf01, leaf2withDuplicate));
+            localMerkleRoot = keccak256(abi.encodePacked(leaf01, leaf2withDuplicate));
         } else {
             // More complex trees would require proper implementation
             revert("Unsupported number of leaves");
@@ -87,7 +93,8 @@ contract DiamondGenesisPassMintTest is Test {
         
         // Set merkle root in the contract
         vm.prank(admin);
-        nft.setMerkleRoot(merkleRoot);
+        nft.setMerkleRoot(localMerkleRoot);
+        merkleRoot = localMerkleRoot;
     }
     
     // Helper to generate a merkle proof for testing whitelist minting
@@ -190,6 +197,20 @@ contract DiamondGenesisPassMintTest is Test {
         // Verify token ownership
         assertEq(nft.ownerOf(1), user1);
         assertEq(nft.totalSupply(), 1);
+    }
+    
+    // Test safe mint by owner
+    function testSafeMintByOwner() public {
+        // Owner should be able to mint without payment
+        vm.prank(admin);
+        nft.safeMintOwner(user2);
+        
+        // Verify token ownership
+        assertEq(nft.ownerOf(1), user2);
+        assertEq(nft.totalSupply(), 1);
+        
+        // Verify minter is set correctly in the distributor
+        assertEq(nft.minterOf(1), user2);
     }
     
     // Test whitelist mint without setting merkle root (should fail)

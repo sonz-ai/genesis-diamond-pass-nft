@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
@@ -40,7 +41,10 @@ contract CentralizedRoyaltyDistributorMoreTest is Test {
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         // Deploy NFT and register
         nft = new DiamondGenesisPass(address(distributor), 750, creator);
-        distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        // Only register if not already registered in constructor
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        }
         // Mint token 1 to user1
         nft.mintOwner(user1);
         vm.stopPrank();
@@ -86,19 +90,17 @@ contract CentralizedRoyaltyDistributorMoreTest is Test {
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
-        uint256[] memory timestamps = new uint256[](1);
         bytes32[] memory txHashes = new bytes32[](1);
         tokenIds[0] = 1;
         minters[0] = user1;
         salePrices[0] = 1 ether;
-        timestamps[0] = block.timestamp;
         txHashes[0] = keccak256(abi.encodePacked("tx1"));
 
         // Expect event and execute
         vm.startPrank(service);
         vm.expectEmit(true, true, true, true);
         emit RoyaltyAttributed(address(nft), 1, user1, 1 ether, 15000000000000000, 60000000000000000, txHashes[0]);
-        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, timestamps, txHashes);
+        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
         vm.stopPrank();
 
         uint256 expectedRoyalty = (1 ether * 750) / 10000;
@@ -109,7 +111,7 @@ contract CentralizedRoyaltyDistributorMoreTest is Test {
         uint256[] memory t = new uint256[](0);
         vm.prank(user2);
         vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
-        distributor.batchUpdateRoyaltyData(address(nft), t, new address[](0), new uint256[](0), new uint256[](0), new bytes32[](0));
+        distributor.batchUpdateRoyaltyData(address(nft), t, new address[](0), new uint256[](0), new bytes32[](0));
     }
 
     function testSubmitMerkleRootInsufficientBalanceRevert() public {

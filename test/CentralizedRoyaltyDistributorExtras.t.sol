@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
@@ -22,7 +23,10 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         nft = new DiamondGenesisPass(address(distributor), royaltyNum, creator);
-        distributor.registerCollection(address(nft), royaltyNum, 2000, 8000, creator);
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), royaltyNum, 2000, 8000, creator);
+        }
         vm.stopPrank();
     }
 
@@ -67,8 +71,6 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         minters[0] = user1;
         uint256[] memory salePrices = new uint256[](1);
         salePrices[0] = 1 ether;
-        uint256[] memory txTimes = new uint256[](1);
-        txTimes[0] = block.timestamp;
         bytes32[] memory txHashes = new bytes32[](1);
         txHashes[0] = keccak256(abi.encodePacked("sale1"));
 
@@ -76,7 +78,7 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         vm.startPrank(service);
         vm.expectEmit(true, true, false, true);
         emit RoyaltyAttributed(address(nft), 1, user1, 1 ether, 15000000000000000, 60000000000000000, txHashes[0]);
-        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txTimes, txHashes);
+        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
         vm.stopPrank();
 
         // Validate token-level data
@@ -104,7 +106,6 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
             address(nft),
             emptyUint,
             emptyAddress,
-            emptyUint,
             emptyUint,
             emptyBytes32
         );

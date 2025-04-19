@@ -31,7 +31,12 @@ contract RoyaltyMerkleDistributionTest is Test {
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         nft = new DiamondGenesisPass(address(distributor), 750, creator);
-        distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        }
+        
         nft.setPublicMintActive(true);
         vm.stopPrank();
         
@@ -334,7 +339,6 @@ contract RoyaltyMerkleDistributionTest is Test {
             tokenIds,
             originalMinters,
             salePrices,
-            timestamps,
             txHashes
         );
         

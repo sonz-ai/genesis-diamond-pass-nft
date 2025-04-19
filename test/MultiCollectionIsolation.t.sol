@@ -30,9 +30,14 @@ contract MultiCollectionIsolationTest is Test {
         nft1 = new DiamondGenesisPass(address(distributor), royaltyFee1, creator1);
         nft2 = new DiamondGenesisPass(address(distributor), royaltyFee2, creator2);
         
-        // Register both collections with different configurations
-        distributor.registerCollection(address(nft1), royaltyFee1, 2000, 8000, creator1);
-        distributor.registerCollection(address(nft2), royaltyFee2, 3000, 7000, creator2);
+        // Register both collections only if not already registered
+        if (!distributor.isCollectionRegistered(address(nft1))) {
+            distributor.registerCollection(address(nft1), royaltyFee1, 2000, 8000, creator1);
+        }
+        
+        if (!distributor.isCollectionRegistered(address(nft2))) {
+            distributor.registerCollection(address(nft2), royaltyFee2, 3000, 7000, creator2);
+        }
         
         // Enable minting for both collections
         nft1.setPublicMintActive(true);

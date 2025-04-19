@@ -71,7 +71,10 @@ contract ERC20OracleEndToEndTest is Test {
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         
         nft = new DiamondGenesisPass(address(distributor), royaltyFee, creator);
-        distributor.registerCollection(address(nft), royaltyFee, 2000, 8000, creator);
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), royaltyFee, 2000, 8000, creator);
+        }
         
         nft.setPublicMintActive(true);
         vm.stopPrank();

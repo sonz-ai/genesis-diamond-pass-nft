@@ -29,8 +29,10 @@ contract CentralizedRoyaltyDistributorTest is Test {
         vm.startPrank(admin);
         uint96 royaltyNum = 750; // 7.5%
         nft = new DiamondGenesisPass(address(distributor), royaltyNum, creator);
-        // Now manually register because constructor failed due to role
-        distributor.registerCollection(address(nft), royaltyNum, 2000, 8000, creator);
+        // Only register if not already registered in constructor
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), royaltyNum, 2000, 8000, creator);
+        }
         vm.stopPrank();
     }
 

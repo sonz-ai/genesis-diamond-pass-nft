@@ -30,9 +30,10 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         
         // Deploy NFT contract and register with distributor
         nft = new DiamondGenesisPass(address(distributor), royaltyFee, creator);
-        distributor.registerCollection(address(nft), royaltyFee, 2000, 8000, creator);
-        
-        // Set up NFT for minting
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), royaltyFee, 2000, 8000, creator);
+        }
+        // Set up NFT for minting (must be done by owner)
         nft.setPublicMintActive(true);
         vm.stopPrank();
         
@@ -61,13 +62,11 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
-        uint256[] memory timestamps = new uint256[](1);
         bytes32[] memory txHashes = new bytes32[](1);
         
         tokenIds[0] = 1;
         minters[0] = minter;
         salePrices[0] = 1 ether;
-        timestamps[0] = block.timestamp;
         txHashes[0] = keccak256(abi.encodePacked("sale1"));
         
         // Update royalty data - this will accrue royalties
@@ -77,7 +76,6 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
             tokenIds,
             minters,
             salePrices,
-            timestamps,
             txHashes
         );
         
@@ -107,7 +105,6 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         uint256[] memory tokenIds = new uint256[](2);
         address[] memory minters = new address[](2);
         uint256[] memory salePrices = new uint256[](2);
-        uint256[] memory timestamps = new uint256[](2);
         bytes32[] memory txHashes = new bytes32[](2);
         
         tokenIds[0] = 1;
@@ -116,8 +113,6 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         minters[1] = minter;
         salePrices[0] = 1 ether;
         salePrices[1] = 2 ether;
-        timestamps[0] = block.timestamp;
-        timestamps[1] = block.timestamp;
         txHashes[0] = keccak256(abi.encodePacked("sale1"));
         txHashes[1] = keccak256(abi.encodePacked("sale2"));
         
@@ -127,7 +122,6 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
             tokenIds,
             minters,
             salePrices,
-            timestamps,
             txHashes
         );
         
@@ -176,13 +170,11 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
-        uint256[] memory timestamps = new uint256[](1);
         bytes32[] memory txHashes = new bytes32[](1);
         
         tokenIds[0] = 1;
         minters[0] = minter;
         salePrices[0] = 1 ether;
-        timestamps[0] = block.timestamp;
         txHashes[0] = keccak256(abi.encodePacked("sale1"));
         
         vm.prank(service);
@@ -191,7 +183,6 @@ contract CentralizedRoyaltyDistributorAnalyticsViewsTest is Test {
             tokenIds,
             minters,
             salePrices,
-            timestamps,
             txHashes
         );
         

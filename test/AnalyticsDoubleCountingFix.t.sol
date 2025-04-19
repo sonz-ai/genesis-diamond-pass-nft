@@ -21,8 +21,8 @@ contract AnalyticsDoubleCountingFix is Test {
     address buyer = address(0x5);
 
     uint256 constant SALE_PRICE = 1 ether;
-    uint256 constant ROYALTY_FEE = 1000; // 10% in basis points
-    bytes32 constant TRANSACTION_HASH = keccak256("transaction1");
+    uint96 constant ROYALTY_FEE = 1000; // 10% in basis points
+    bytes32 constant TRANSACTION_HASH = keccak256("tx1");
 
     function setUp() public {
         vm.startPrank(admin);
@@ -30,6 +30,18 @@ contract AnalyticsDoubleCountingFix is Test {
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         nft = new DiamondGenesisPass(address(distributor), ROYALTY_FEE, creator);
         nft.setPublicMintActive(true);
+        
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(
+                address(nft),
+                ROYALTY_FEE,
+                2000, // 20% minter shares
+                8000, // 80% creator shares
+                creator
+            );
+        }
+        
         vm.stopPrank();
 
         // Mint a token
@@ -39,15 +51,21 @@ contract AnalyticsDoubleCountingFix is Test {
     }
 
     function testNoDoubleCountingInAnalytics() public {
-        // 1. First, record a sale and update royalty data
+        // 1. Record a sale via batchUpdateRoyaltyData
         address[] memory collections = new address[](1);
         collections[0] = address(nft);
         
         uint256[] memory tokenIds = new uint256[](1);
         tokenIds[0] = 1;
         
+        address[] memory minters = new address[](1);
+        minters[0] = minter;
+        
         uint256[] memory salePrices = new uint256[](1);
         salePrices[0] = SALE_PRICE;
+        
+        uint256[] memory timestamps = new uint256[](1);
+        timestamps[0] = block.timestamp;
         
         bytes32[] memory txHashes = new bytes32[](1);
         txHashes[0] = TRANSACTION_HASH;
@@ -55,18 +73,20 @@ contract AnalyticsDoubleCountingFix is Test {
         // Record the sale via batch update
         vm.prank(service);
         distributor.batchUpdateRoyaltyData(
-            collections,
+            address(nft),
             tokenIds,
+            minters,
             salePrices,
             txHashes
         );
 
         // Check initial accrued royalty
         uint256 expectedRoyalty = (SALE_PRICE * ROYALTY_FEE) / 10000;
-        assertEq(distributor.totalAccruedRoyalty(), expectedRoyalty, "Accrued royalty should match expected amount after batch update");
+        assertEq(distributor.totalAccruedRoyalty(), expectedRoyalty, "Accrued royalty should match expected amount");
 
-        // 2. Now simulate receiving the actual royalty payment
-        vm.deal(address(this), expectedRoyalty);
+        // 2. Now simulate receiving the royalty payment AS THE COLLECTION CONTRACT
+        vm.deal(address(nft), expectedRoyalty); // Fund the NFT contract first
+        vm.prank(address(nft)); // Impersonate the NFT contract
         (bool success, ) = address(distributor).call{value: expectedRoyalty}("");
         require(success, "Transfer failed");
 
@@ -90,19 +110,32 @@ contract AnalyticsDoubleCountingFix is Test {
         uint256[] memory tokenIds = new uint256[](1);
         tokenIds[0] = 1;
         
+        address[] memory minters = new address[](1);
+        minters[0] = minter;
+        
         uint256[] memory salePrices = new uint256[](1);
         salePrices[0] = SALE_PRICE;
+        
+        uint256[] memory timestamps = new uint256[](1);
+        timestamps[0] = block.timestamp;
         
         bytes32[] memory txHashes = new bytes32[](1);
         txHashes[0] = TRANSACTION_HASH;
 
         // Record the sale
         vm.prank(service);
-        distributor.batchUpdateRoyaltyData(collections, tokenIds, salePrices, txHashes);
+        distributor.batchUpdateRoyaltyData(
+            address(nft),
+            tokenIds,
+            minters,
+            salePrices,
+            txHashes
+        );
 
-        // Simulate royalty payment
+        // Simulate royalty payment AS THE COLLECTION CONTRACT
         uint256 royaltyAmount = (SALE_PRICE * ROYALTY_FEE) / 10000;
-        vm.deal(address(this), royaltyAmount);
+        vm.deal(address(nft), royaltyAmount); // Fund the NFT contract first
+        vm.prank(address(nft)); // Impersonate the NFT contract
         (bool success, ) = address(distributor).call{value: royaltyAmount}("");
         require(success, "Transfer failed");
 
@@ -129,22 +162,22 @@ contract AnalyticsDoubleCountingFix is Test {
     // Test role-based access for analytics functions
     function testAnalyticsViewFunctionsAccessibility() public {
         // Anyone should be able to view analytics
-        uint256 accrued = distributor.totalAccrued();
-        uint256 claimed = distributor.totalClaimed();
+        uint256 accrued = distributor.totalAccruedRoyalty();
+        uint256 claimed = distributor.totalClaimedRoyalty();
         
-        // These should match the public state variables
-        assertEq(accrued, distributor.totalAccruedRoyalty());
-        assertEq(claimed, distributor.totalClaimedRoyalty());
+        // These should start at 0
+        assertEq(accrued, 0, "Initial accrued royalty should be 0");
+        assertEq(claimed, 0, "Initial claimed royalty should be 0");
         
         // Test as different users
         vm.prank(minter);
-        accrued = distributor.totalAccrued();
+        accrued = distributor.totalAccruedRoyalty();
         
         vm.prank(buyer);
-        claimed = distributor.totalClaimed();
+        claimed = distributor.totalClaimedRoyalty();
         
         // Values should be consistent regardless of caller
-        assertEq(accrued, distributor.totalAccruedRoyalty());
-        assertEq(claimed, distributor.totalClaimedRoyalty());
+        assertEq(accrued, 0, "Accrued royalty should be consistent across callers");
+        assertEq(claimed, 0, "Claimed royalty should be consistent across callers");
     }
 }

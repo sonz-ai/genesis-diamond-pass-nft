@@ -50,7 +50,10 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         
         // Deploy NFT with adapter
         nft = new DiamondGenesisPass(address(distributor), 750, creator);
-        distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
+        }
         
         // Deploy unregistered adapter for testing
         unregisteredAdapter = new UnregisteredCollectionAdapter(address(distributor), 500);
@@ -58,6 +61,7 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         vm.stopPrank();
         
         // Fund accounts
+        vm.deal(admin, 10 ether);
         vm.deal(user1, 10 ether);
         vm.deal(user2, 10 ether);
     }
@@ -99,13 +103,11 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
-        uint256[] memory timestamps = new uint256[](1);
         bytes32[] memory txHashes = new bytes32[](1);
         
         tokenIds[0] = 1;
         minters[0] = user1;
         salePrices[0] = 1 ether;
-        timestamps[0] = block.timestamp;
         txHashes[0] = keccak256(abi.encodePacked("tx1"));
         
         // Update royalty data
@@ -115,7 +117,6 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
             tokenIds,
             minters,
             salePrices,
-            timestamps,
             txHashes
         );
         
@@ -188,8 +189,10 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         // Deploy a new NFT with different fee
         vm.startPrank(admin);
         DiamondGenesisPass newNft = new DiamondGenesisPass(address(distributor), 500, creator);
-        // Register with a DIFFERENT fee than passed to constructor
-        distributor.registerCollection(address(newNft), 750, 2000, 8000, creator);
+        // Register with a DIFFERENT fee than passed to constructor, but only if not already registered
+        if (!distributor.isCollectionRegistered(address(newNft))) {
+            distributor.registerCollection(address(newNft), 750, 2000, 8000, creator);
+        }
         vm.stopPrank();
         
         // The adapter's royaltyInfo should use the local fee (500)
@@ -214,7 +217,6 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         uint256[] memory tokenIds = new uint256[](batchSize);
         address[] memory minters = new address[](batchSize);
         uint256[] memory salePrices = new uint256[](batchSize);
-        uint256[] memory timestamps = new uint256[](batchSize);
         bytes32[] memory txHashes = new bytes32[](batchSize);
         
         // Generate batch data (all for token 1)
@@ -222,7 +224,6 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
             tokenIds[i] = 1;
             minters[i] = user1;
             salePrices[i] = 1 ether * (i + 1);
-            timestamps[i] = block.timestamp + i;
             txHashes[i] = keccak256(abi.encodePacked("tx", i));
         }
         
@@ -233,7 +234,6 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
             tokenIds,
             minters,
             salePrices,
-            timestamps,
             txHashes
         );
         

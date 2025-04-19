@@ -27,16 +27,19 @@ contract CentralizedRoyaltyDistributorERC20FlowTest is Test {
         vm.startPrank(admin);
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
-        vm.stopPrank();
         
         // Deploy NFT contract and register with distributor
-        vm.startPrank(admin);
         nft = new DiamondGenesisPass(address(distributor), 500, creator);
-        distributor.registerCollection(address(nft), 500, 2000, 8000, creator);
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), 500, 2000, 8000, creator);
+        }
+        
         vm.stopPrank();
 
         // Deploy dummy ERC20 token
         token = new DummyERC20();
+        // initial user balance should be zero for clarity in assertions
     }
 
     function testAddERC20RoyaltiesAndClaim() public {

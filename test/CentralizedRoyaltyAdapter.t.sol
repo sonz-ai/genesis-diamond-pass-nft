@@ -14,13 +14,12 @@ contract CentralizedRoyaltyAdapterTest is Test {
 
     function setUp() public {
         vm.startPrank(admin);
-        // Deploy distributor and grant service role
         distributor = new CentralizedRoyaltyDistributor();
-        distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), admin);
-        // Deploy NFT passing distributor and royalty fee 1000 (10%)
         nft = new DiamondGenesisPass(address(distributor), 1000, creator);
-        // Register collection config: royaltyFeeNumerator=1000, minterShares=2000, creatorShares=8000
-        distributor.registerCollection(address(nft), 1000, 2000, 8000, creator);
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), 1000, 2000, 8000, creator);
+        }
         vm.stopPrank();
     }
 

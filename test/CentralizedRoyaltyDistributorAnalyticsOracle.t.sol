@@ -30,12 +30,13 @@ contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
         vm.startPrank(admin);
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
-        vm.stopPrank();
-
-        // Deploy NFT and register collection
-        vm.startPrank(admin);
+        
+        // Deploy NFT 
         nft = new DiamondGenesisPass(address(distributor), royaltyNum, creator);
-        distributor.registerCollection(address(nft), royaltyNum, 2000, 8000, creator);
+        // Only register if not already registered
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(address(nft), royaltyNum, 2000, 8000, creator);
+        }
         vm.stopPrank();
     }
 

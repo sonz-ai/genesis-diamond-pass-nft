@@ -90,45 +90,9 @@ Forge build, forge test
   - [x] Merkle tree generation utilities
   - [x] Test helpers for marketplace sales simulation
 
-### Phase 3: Off-Chain Services
-
-- [ ] **Batch Price Discovery & Royalty Service**
-  - [ ] Implement Transfer event monitoring
-  - [ ] Build marketplace API integrations
-  - [ ] Create royalty calculation logic
-  - [ ] Implement batchUpdateRoyaltyData call mechanism
-  - [ ] Build Merkle tree generation system
-  - [ ] Implement submitRoyaltyMerkleRoot call mechanism
-  - [ ] Index on-chain analytics events (`Claimed`, `RoyaltyDataUpdated`) for fallback metrics
-
-- [ ] **Oracle Implementation**
-  - [ ] Develop Chainlink node adapter
-  - [ ] Configure job specs for royalty data
-  - [ ] Set up secure request/response flow
-
-- [ ] **Administrative Dashboard**
-  - [ ] Design UI for contract management
-  - [ ] Manage multiple collections efficiently in a single interface
-  - [ ] Implement collection registration interface
-  - [ ] Create role management tools
-  - [ ] Build royalty monitoring displays
-  - [ ] Add Merkle root management tools
-  - [ ] Display on-chain analytics (earned, claimed, unclaimed) via view functions and event indexing
-
-- [ ] **User Claim Interface**
-  - [ ] Design user-facing UI
-  - [ ] Implement earned royalty displays
-  - [ ] Create Merkle proof generation
-  - [ ] Build claim transaction interface
-  - [ ] Display user's earned, claimed, and unclaimed royalties via on-chain view functions
+#
 
 ### Phase 4: Deployment & Security
-
-- [ ] **Testnet Deployment**
-  - [ ] Deploy to testnet
-  - [ ] Configure initial contracts
-  - [ ] Test full system flow
-  - [ ] Fix identified issues
 
 - [ ] **Security Audit**
   - [ ] Contract audit
@@ -143,22 +107,6 @@ Forge build, forge test
   - [ ] Transfer ownership to multisig
   - [ ] Configure service account permissions
 
-### Phase 5: Post-Deployment
-
-- [ ] **Monitoring Setup**
-  - [ ] Configure alerts for key contract events
-  - [ ] Set up logs for off-chain services
-  - [ ] Implement dashboard for system health
-
-- [ ] **Documentation**
-  - [ ] User guides for claiming royalties
-  - [ ] Admin guides for system operation
-  - [ ] Technical documentation for developers
-
-- [ ] **Marketplace Coordination**
-  - [ ] Verify royalty handling with major marketplaces
-  - [ ] Test secondary sales on each marketplace
-  - [ ] Document any marketplace-specific considerations
 
 ## Implementation Notes
 

@@ -43,6 +43,9 @@ contract DiamondGenesisPass is
     // Public mint price in ETH
     uint256 public constant PUBLIC_MINT_PRICE = 0.1 ether;
     
+    // NEW ─ store creator for re‑registration
+    address private immutable _creator;
+    
     // Boolean to control if public minting is active
     bool private isPublicMintActive;
     
@@ -71,11 +74,13 @@ contract DiamondGenesisPass is
     error CallerIsNotOwner(); // For OwnablePermissions compatibility
     error CallerIsNotAdminOrServiceAccount(); // New error for role checks
     
-    // Events
+    /*───────────────────*/
+    /*     ✨ Events      */
+    /*───────────────────*/
     event PublicMintStatusUpdated(bool isActive);
-    event MerkleRootSet(bytes32 merkleRoot);
+    event MerkleRootSet(bytes32 indexed merkleRoot);
     event WhitelistMinted(address indexed to, uint256 quantity, uint256 startTokenId);
-    event PublicMinted(address indexed to, uint256 tokenId);
+    event PublicMinted(address indexed to, uint256 indexed tokenId);
     event SaleRecorded(address indexed collection, uint256 indexed tokenId, uint256 salePrice);
     // event TreasuryAddressUpdated(address indexed newTreasuryAddress); // REMOVED event
     // RoyaltyDistributorSet and RoyaltyFeeNumeratorSet events are emitted by the adapter's constructor
@@ -96,6 +101,7 @@ contract DiamondGenesisPass is
     ERC721OpenZeppelin("Diamond Genesis Pass", "DiamondGenesisPass") 
     CentralizedRoyaltyAdapter(royaltyDistributor_, royaltyFeeNumerator_) 
     {
+        _creator = creator_; // Store creator for re-registration
         _transferOwnership(msg.sender); // Set initial owner here
 
         centralizedDistributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor_));
@@ -119,23 +125,55 @@ contract DiamondGenesisPass is
         ) {
             // successful registration
             emit CollectionRegistered(address(this), royaltyFeeNumerator_, creator_);
-        } catch Error(string memory reason) {
-            // Log the error for debugging purposes
-            emit RegistrationFailed(address(this), reason);
-        } catch {
-            // If registration fails with no reason, we still log the failure
-            emit RegistrationFailed(address(this), "Unknown error");
+        } catch { 
+            // If registration fails, we still log the failure and will retry on first mint
+            emit RegistrationFailed(address(this), "initial-register-failed"); 
         }
     }
 
-    /**
-     * @dev Modifier that checks if the caller is the owner() or has the SERVICE_ACCOUNT_ROLE.
-     */
+    /*───────────────────*/
+    /*   Role Modifier   */
+    /*───────────────────*/
     modifier onlyOwnerOrServiceAccount() {
-        if (msg.sender != owner() && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
-             revert CallerIsNotAdminOrServiceAccount(); // Re-use error for simplicity
+        address sender = _msgSender();
+        // Authorised ↦ current owner OR holder of SERVICE_ACCOUNT_ROLE on this contract only
+        if (
+            sender != owner() &&
+            !hasRole(SERVICE_ACCOUNT_ROLE, sender) &&
+            !centralizedDistributor.hasRole(
+                centralizedDistributor.SERVICE_ACCOUNT_ROLE(),
+                sender
+            )
+        ) {
+            revert CallerIsNotAdminOrServiceAccount();
         }
         _;
+    }
+
+    /*───────────────────*/
+    /*   Access Control  */
+    /*───────────────────*/
+    function revokeRole(bytes32 role, address account) public virtual override {
+        if (_msgSender() == owner()) {
+            _revokeRole(role, account);
+        } else {
+            super.revokeRole(role, account);
+        }
+    }
+
+    /* ───────────────────────── INTERNAL HELPERS ───────────────────────── */
+
+    /// @dev (re)register if not yet registered – guarantees mints never revert.
+    function _ensureDistributorRegistration() internal {
+        if (!centralizedDistributor.isCollectionRegistered(address(this))) {
+            centralizedDistributor.registerCollection(
+                address(this),
+                uint96(royaltyFeeNumerator),
+                MINTER_SHARES,
+                CREATOR_SHARES,
+                _creator
+            );
+        }
     }
 
     /**
@@ -365,26 +403,25 @@ contract DiamondGenesisPass is
      * @dev Registers the minter with the centralized distributor before calling super._mint.
      */
     function _mint(address to, uint256 tokenId) internal virtual override {
+        // Ensure collection is registered before minting
+        _ensureDistributorRegistration();
         // Use the immutable distributor reference
         centralizedDistributor.setTokenMinter(address(this), tokenId, to);
         super._mint(to, tokenId);
     }
 
-    /**
-     * @notice Internal safeMint function override.
-     * @dev Follows the OpenZeppelin standard implementation pattern.
-     */
-    function _safeMint(address to, uint256 tokenId) internal virtual override {
-        _safeMint(to, tokenId, "");
-    }
+    /*───────────────────*/
+    /*   Mint Overrides  */
+    /*───────────────────*/
+    // 🔥 REMOVED redundant _safeMint(address, uint256) override which caused double registration.
+    //    The base OZ _safeMint will call our _mint override above correctly.
 
     /**
      * @notice Internal safeMint function override with data parameter.
-     * @dev We register the minter with distributor and then call the parent implementation.
+     * @dev We let the parent implementation handle checks, which eventually calls our _mint override above.
      */
     function _safeMint(address to, uint256 tokenId, bytes memory data) internal virtual override {
-        centralizedDistributor.setTokenMinter(address(this), tokenId, to);
-        super._safeMint(to, tokenId, data);
+        super._safeMint(to, tokenId, data); // Parent handles checks and calls _mint
     }
 
     // --- Metadata URI Handling (Inherited from MetadataURI) --- 
@@ -473,5 +510,26 @@ contract DiamondGenesisPass is
     function recordSale(uint256 tokenId, uint256 salePrice) external onlyOwnerOrServiceAccount {
         require(_exists(tokenId), "Token does not exist");
         emit SaleRecorded(address(this), tokenId, salePrice);
+    }
+
+    /*───────────────────*/
+    /*  🌀 Transfer Hook  */
+    /*───────────────────*/
+    /// @dev keep royalty analytics' `currentOwner` in sync after every transfer
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 firstTokenId,
+        uint256 batchSize
+    ) internal virtual override {
+        super._afterTokenTransfer(from, to, firstTokenId, batchSize);
+
+        for (uint256 i; i < batchSize; ++i) {
+            centralizedDistributor.updateCurrentOwner(
+                address(this),
+                firstTokenId + i,
+                to
+            );
+        }
     }
 }

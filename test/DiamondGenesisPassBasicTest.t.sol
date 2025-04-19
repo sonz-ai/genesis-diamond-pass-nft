@@ -25,6 +25,18 @@ contract DiamondGenesisPassBasicTest is Test {
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         nft = new DiamondGenesisPass(address(distributor), 1000, creator);
+        
+        // Only register if not already registered in constructor
+        if (!distributor.isCollectionRegistered(address(nft))) {
+            distributor.registerCollection(
+                address(nft),
+                1000, // 10% royalty fee
+                2000, // 20% minter shares
+                8000, // 80% creator shares
+                creator
+            );
+        }
+        
         vm.stopPrank();
     }
 
