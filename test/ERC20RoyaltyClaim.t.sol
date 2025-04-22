@@ -19,17 +19,25 @@ contract TransferSyncTest is Test {
 
         distributor = new CentralizedRoyaltyDistributor();
         pass        = new DiamondGenesisPass(address(distributor), 750, creator);
-
+        
+        // Disable transfer validator for testing purposes
+        pass.setTransferValidator(address(0));
+        
+        // Give service account role to test contract for minting
+        pass.grantRole(pass.SERVICE_ACCOUNT_ROLE(), address(this));
         pass.mintOwner(minter);
     }
 
     function testCurrentOwnerUpdatesOnTransfer() public {
         vm.prank(minter);
+        pass.approve(buyer, 1);
+        
+        vm.prank(minter);
         pass.transferFrom(minter, buyer, 1);
 
         (
             ,               // storedMinter
-            address current,// currentOwner
+            address current,// tokenHolder (was currentOwner)
             ,               // txnCount
             ,               // volume
             ,               // minterEarned

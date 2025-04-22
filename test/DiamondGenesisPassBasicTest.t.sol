@@ -69,16 +69,19 @@ contract DiamondGenesisPassBasicTest is Test {
     }
 
     function testSetPublicMintActiveAndMint() public {
+        // Get mint price from contract
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
         vm.prank(admin);
         vm.expectEmit(true, true, true, true);
         emit PublicMintStatusUpdated(true);
         nft.setPublicMintActive(true);
         
         vm.prank(user);
-        vm.deal(user, 1 ether);
+        vm.deal(user, mintPrice);
         vm.expectEmit(true, true, true, true);
         emit PublicMinted(user, 1);
-        nft.mint(user);
+        nft.mint{value: mintPrice}(user);
 
         assertEq(nft.ownerOf(1), user, "User should own the minted token");
     }
@@ -88,11 +91,14 @@ contract DiamondGenesisPassBasicTest is Test {
         vm.prank(admin);
         nft.setPublicMintActive(true);
         
+        // Get mint price from contract
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
         // Mint a token to user
-        vm.prank(user);
-        // Ensure user has ETH
-        vm.deal(user, 1 ether);
-        nft.mint(user);
+        vm.startPrank(user);
+        vm.deal(user, mintPrice);
+        nft.mint{value: mintPrice}(user);
+        vm.stopPrank();
         
         // Record sale by owner
         vm.prank(admin);

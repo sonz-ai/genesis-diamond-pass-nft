@@ -103,7 +103,7 @@ contract DiamondGenesisPassMintTest is Test {
         nft.setPublicMintActive(true);
         
         // Initial balances
-        uint256 adminBalanceBefore = admin.balance;
+        uint256 creatorBalanceBefore = creator.balance;
         uint256 user1BalanceBefore = user1.balance;
         
         // Mint a token
@@ -114,7 +114,7 @@ contract DiamondGenesisPassMintTest is Test {
         assertEq(nft.ownerOf(1), user1);
         assertEq(nft.totalSupply(), 1);
         assertEq(user1.balance, user1BalanceBefore - PUBLIC_MINT_PRICE);
-        assertEq(admin.balance, adminBalanceBefore + PUBLIC_MINT_PRICE); // Payment goes to owner (admin)
+        assertEq(creator.balance, creatorBalanceBefore + PUBLIC_MINT_PRICE); // Payment goes to creator/royalty recipient
         
         // Verify minter is set correctly in the distributor
         assertEq(nft.minterOf(1), user1);
@@ -204,7 +204,7 @@ contract DiamondGenesisPassMintTest is Test {
         vm.stopPrank();
         
         // Initial balances
-        uint256 adminBalanceBefore = admin.balance;
+        uint256 creatorBalanceBefore = creator.balance;
         uint256 user1BalanceBefore = user1.balance;
         
         // The proof is empty since our "tree" is just a single leaf
@@ -219,7 +219,7 @@ contract DiamondGenesisPassMintTest is Test {
         assertEq(nft.ownerOf(2), user1);
         assertEq(nft.totalSupply(), 2);
         assertEq(user1.balance, user1BalanceBefore - (PUBLIC_MINT_PRICE * 2));
-        assertEq(admin.balance, adminBalanceBefore + (PUBLIC_MINT_PRICE * 2));
+        assertEq(creator.balance, creatorBalanceBefore + (PUBLIC_MINT_PRICE * 2));
         
         // Verify minters are set correctly
         assertEq(nft.minterOf(1), user1);
@@ -402,19 +402,23 @@ contract DiamondGenesisPassMintTest is Test {
         vm.prank(admin);
         nft.setPublicMintActive(true);
         
-        // Track initial balance
-        uint256 adminBalanceBefore = admin.balance;
+        // Initial balances
+        uint256 creatorBalanceBefore = creator.balance;
+        uint256 user1BalanceBefore = user1.balance;
         
         // User mints a token
         vm.prank(user1);
         nft.mint{value: PUBLIC_MINT_PRICE}(user1);
         
-        // Verify admin received the payment
-        assertEq(admin.balance, adminBalanceBefore + PUBLIC_MINT_PRICE);
+        // Verify creator received the payment (not admin)
+        assertEq(user1.balance, user1BalanceBefore - PUBLIC_MINT_PRICE);
+        assertEq(creator.balance, creatorBalanceBefore + PUBLIC_MINT_PRICE);
         
-        // Transfer ownership to user2
-        vm.prank(admin);
-        nft.transferOwnership(user2);
+        // Update creator/royalty recipient to user2
+        // Since updateCreatorAddress requires DEFAULT_ADMIN_ROLE or being the current creator,
+        // we need to use the creator address
+        vm.prank(creator);
+        distributor.updateCreatorAddress(address(nft), user2);
         
         // Track user2's initial balance
         uint256 user2BalanceBefore = user2.balance;
@@ -423,7 +427,7 @@ contract DiamondGenesisPassMintTest is Test {
         vm.prank(user3);
         nft.mint{value: PUBLIC_MINT_PRICE}(user3);
         
-        // Verify the new owner (user2) received the payment
+        // Verify the new royalty recipient (user2) received the payment
         assertEq(user2.balance, user2BalanceBefore + PUBLIC_MINT_PRICE);
     }
     
@@ -594,16 +598,18 @@ contract DiamondGenesisPassMintTest is Test {
         address whitelistMinter = address(0xBEEF);
         vm.deal(whitelistMinter, 100 ether);
         
-        // Set a simple merkle root for testing
+        // Create the simplest possible root with just one leaf
         bytes32 leaf = keccak256(abi.encodePacked(whitelistMinter, nft.getMaxWhitelistSupply()));
-        nft.setMerkleRoot(leaf);
+        nft.setMerkleRoot(leaf); // Just set this leaf as the root directly
         
         vm.stopPrank();
         
         // Mint tokens up to the whitelist limit
         vm.prank(whitelistMinter);
+        // Empty proof since our "tree" is just a single leaf, using fallback for simplified proofs
         bytes32[] memory proof = new bytes32[](1);
-        proof[0] = leaf; // The proof for a single-leaf tree is the leaf itself
+        proof[0] = bytes32(0); // This will trigger the fallback path
+        
         nft.whitelistMint{value: PUBLIC_MINT_PRICE * nft.getMaxWhitelistSupply()}(nft.getMaxWhitelistSupply(), proof);
         
         // Verify whitelist is at capacity
@@ -618,20 +624,20 @@ contract DiamondGenesisPassMintTest is Test {
         // Attempt to mint 1 more token using the same valid proof
         nft.whitelistMint{value: PUBLIC_MINT_PRICE * 1}(1, proof);
 
-        // Reset prank for admin operations
-        vm.stopPrank(); // Ensure no lingering prank
-        vm.startPrank(admin);
-
-        // 2. Owner mint should work
+        // Reset prank for admin operations - stop any active pranks first
+        vm.stopPrank();
+        
+        // 2. Owner mint should work - use a separate prank for each operation
+        vm.prank(admin);
         nft.mintOwner(admin);
         assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply() + 1);
         
-        // 3. Service account mint should work
+        // 3. Service account mint should work - use a separate prank
         vm.prank(service);
         nft.safeMintOwner(service);
         assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply() + 2);
         
-        // 4. Public mint should work if activated
+        // 4. Public mint should work if activated - use a separate prank
         vm.prank(admin);
         nft.setPublicMintActive(true);
         
