@@ -5,12 +5,13 @@ This repository contains the smart contract for the Sonzai Diamond Genesis Pass 
 ## Features
 
 - ERC721C-compliant NFT with creator royalties
-- 11% royalty on secondary sales
+- Advanced royalty distribution system splitting royalties between minters and creators
 - Whitelist functionality using Chainlink Functions to verify addresses against a backend API
 - Public mint functionality
-- Mint price of 0.28 ETH
+- Mint price of 0.1 ETH
 - Owner-only batch minting for team allocations
 - Secure withdrawal of contract funds
+- Total supply of 888 tokens (212 reserved for whitelist, 218 for Pre-sale. 388 for public mint)
 
 ## Contract Overview
 
@@ -18,8 +19,32 @@ The `SonzaiGenesisPass` contract is a production-ready implementation of an ERC7
 
 - **Whitelist Minting**: Uses Chainlink Functions to verify if an address is whitelisted by checking against the backend.sonz.ai API
 - **Public Minting**: Allows anyone to mint tokens during the public sale phase
-- **Royalties**: Implements ERC2981 for royalty information, with a fixed 11% royalty
+- **Royalties**: Implements a sophisticated royalty system with the following components:
+  - **DiamondGenesisPass**: The main NFT contract that implements ERC721C standards and directs marketplace royalties to the CentralizedRoyaltyDistributor
+  - **CentralizedRoyaltyAdapter**: A pattern contract implemented by DiamondGenesisPass for royalty routing
+  - **CentralizedRoyaltyDistributor**: A distribution hub that receives royalties from marketplaces and handles splitting between minters and creators
+- **Role-Based Access Control**: Distinct roles for contract ownership, service account operations, and royalty management
 - **Owner Controls**: Includes functions for the owner to manage the contract, including toggling mint phases and withdrawing funds
+
+## Royalty Distribution System
+
+The system implements a sophisticated approach to royalty distribution:
+
+- **Split Royalties**: Secondary market royalties are split between the original minter (e.g., 20%) and the creator/royalty recipient (e.g., 80%)
+- **Direct Mint Payments**: Primary mint payments go directly to the creator/royalty recipient
+- **Roles**:
+  - **Contract Owner**: Controls administrative functions and can transfer ownership to a multisig
+  - **Creator/Royalty Recipient**: Receives creator's share of royalties and primary mint proceeds
+  - **Minters**: Receive their share of royalties from secondary sales of tokens they minted
+  - **Service Account**: Has limited permissions for operational tasks without full admin control
+
+### Royalty Flow
+
+1. When an NFT is sold on a marketplace, the marketplace calls `royaltyInfo` on the NFT contract
+2. The NFT contract directs the royalty payment to the CentralizedRoyaltyDistributor
+3. The distributor receives and tracks royalties per collection
+4. An off-chain service processes sale data and updates accrued royalties for minters and creators
+5. Minters and creators can claim their respective royalties through the distributor
 
 ## Chainlink Functions Integration
 
@@ -136,7 +161,7 @@ npm run setup-whitelist
 ```
 
 This script will guide you through:
-- Setting up API key authentication for the backend.sonz.ai service
+- Setting up API key authentication for the backend.sonzai.io service
 - Configuring Chainlink Functions parameters
 - Testing the API connection
 - Updating your environment variables
@@ -159,14 +184,21 @@ After running the script:
 2. Note the encrypted secrets reference (gist ID)
 3. Add this reference to your .env file as ENCRYPTED_SECRETS_REFERENCE
 
-### Step 5: Deploy the Contract
+### Step 5: Deploy the Contracts
 
-Deploy the contract using Foundry:
+Deploy the contracts in the following order:
+
+1. Deploy the CentralizedRoyaltyDistributor:
+```bash
+forge script script/DeployCentralizedRoyaltyDistributor.s.sol:DeployCentralizedRoyaltyDistributor --rpc-url $RPC_URL --broadcast --verify
+```
+
+2. Deploy the SonzaiGenesisPass contract:
 ```bash
 forge script script/DeploySonzaiGenesisPass.s.sol:DeploySonzaiGenesisPass --rpc-url $RPC_URL --broadcast --verify
 ```
 
-The deployment script will automatically use the values from your `.env` file. For any values not provided in the `.env` file, it will use default values.
+The deployment scripts will automatically use the values from your `.env` file.
 
 ### Step 6: Add Contract as Consumer
 
@@ -186,10 +218,10 @@ npm run transfer-ownership
 This script will:
 - Connect to your deployed contract
 - Transfer ownership to your Gnosis Safe multisig
-- Optionally update the royalty receiver to the Safe as well
+- Optionally update the royalty recipient to the Safe as well
 - Verify the ownership transfer was successful
 
-All mint proceeds (0.28 ETH per mint) and royalties (11% of secondary sales) will then go to the Gnosis Safe.
+All mint proceeds (0.1 ETH per mint) and royalties will then be managed through the Gnosis Safe.
 
 ## Security Considerations
 
@@ -198,86 +230,10 @@ All mint proceeds (0.28 ETH per mint) and royalties (11% of secondary sales) wil
 - The deployment script loads sensitive values from environment variables rather than hardcoding them
 - The API key for backend authentication is set up separately in the Chainlink Functions UI for additional security
 - CSRF protection is implemented for all API calls to the backend.sonz.ai service to prevent cross-site request forgery attacks
+- The royalty distribution system includes checks to prevent reentrancy and unauthorized access
+- Role-based access control ensures that only authorized addresses can perform sensitive operations
 
-## Chainlink Functions Details
-
-### CSRF Protection
-
-The backend.sonz.ai API uses CSRF (Cross-Site Request Forgery) protection to secure its endpoints. This requires:
-
-1. Obtaining a CSRF token from the server before making API requests
-2. Including this token in the headers of subsequent requests
-
-The Chainlink Functions implementation handles this automatically by:
-- First making a request to `https://backend.sonz.ai/api/v1/csrf-token` to get a CSRF token (this endpoint is public and doesn't require authentication)
-- Then including this token in the `X-CSRF-Token` header when making the whitelist verification request
-
-Example of how the CSRF flow works in JavaScript:
-
-```javascript
-// Step 1: Get a CSRF token (public endpoint, no authentication needed)
-fetch('https://backend.sonz.ai/api/v1/csrf-token')
-  .then(response => response.json())
-  .then(data => {
-    // Store the token for future requests
-    const csrfToken = data.csrf_token;
-    
-    // Step 2: Use the token for authenticated requests
-    fetch('https://backend.sonz.ai/api/v1/whitelist/0x123...', {
-      method: 'GET',
-      headers: {
-        'X-API-Key': 'your-api-key',
-        'X-CSRF-Token': csrfToken,
-        'Content-Type': 'application/json'
-      }
-    });
-  });
-```
-
-### Secrets Management
-
-Chainlink Functions requires secure management of API keys and other secrets:
-
-1. Secrets are stored in a JSON file and encrypted using the Chainlink Functions CLI
-2. The encrypted secrets are uploaded to the Chainlink Functions DON (Decentralized Oracle Network)
-3. The contract references these secrets using the encrypted secrets reference (gist ID)
-4. When the Chainlink Functions request is executed, the DON decrypts the secrets and uses them to make the API request
-
-This approach ensures that sensitive information like API keys is never stored on-chain.
-
-### JavaScript Source Code
-
-The JavaScript code executed by Chainlink Functions:
-1. Takes the user's address as input
-2. Retrieves the API key from the encrypted secrets
-3. Makes an HTTP request to get a CSRF token
-4. Makes another HTTP request to check if the address is whitelisted
-5. Returns 1 if the address is whitelisted, 0 if not
-
-This code is stored on-chain in the `requestWhitelistVerification()` function.
-
-## Contract Interaction
-
-After deployment, you can interact with the contract using the following functions:
-
-### For Users
-
-- `requestWhitelistVerification()`: Request verification of your address against the whitelist API
-- `whitelistMint()`: Mint a token during the whitelist phase (after verification)
-- `publicMint()`: Mint a token during the public phase
-- `burn(uint256 tokenId)`: Burn a token you own
-
-### For the Owner
-
-- `setBaseURI(string calldata baseURI)`: Update the base URI for token metadata
-- `toggleWhitelistMint(bool enabled)`: Enable or disable whitelist minting
-- `togglePublicMint(bool enabled)`: Enable or disable public minting
-- `mintBatch(address to, uint256 amount)`: Mint multiple tokens to a specific address
-- `withdraw()`: Withdraw contract funds to the owner
-- `setDefaultRoyalty(address receiver, uint96 feeNumerator)`: Update the default royalty information
-- `setTokenRoyalty(uint256 tokenId, address receiver, uint96 feeNumerator)`: Set royalty information for a specific token
-
-## Claim UI
+## Royalty Claim UI
 
 This project provides a web-based Claim Interface for users to claim their accrued royalties and an Admin Dashboard for managing distributions.
 
