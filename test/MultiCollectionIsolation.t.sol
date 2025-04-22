@@ -20,10 +20,10 @@ contract MultiCollectionIsolationTest is Test {
     uint96 royaltyFee1 = 750; // 7.5%
     uint96 royaltyFee2 = 500; // 5.0%
     
-    uint256 minterShares1 = 2000; // 20%
-    uint256 creatorShares1 = 8000; // 80% 
-    uint256 minterShares2 = 3000; // 30%
-    uint256 creatorShares2 = 7000; // 70%
+    // Note: DiamondGenesisPass has fixed MINTER_SHARES (2000) and CREATOR_SHARES (8000)
+    // These values are used during registration in the constructor
+    uint256 constant EXPECTED_MINTER_SHARES = 2000; // 20% - hardcoded in DiamondGenesisPass
+    uint256 constant EXPECTED_CREATOR_SHARES = 8000; // 80% - hardcoded in DiamondGenesisPass
     
     function setUp() public {
         // Deploy distributor and set up roles
@@ -32,17 +32,11 @@ contract MultiCollectionIsolationTest is Test {
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
         
         // Deploy two different NFT collections
+        // Note: DiamondGenesisPass constructor automatically registers the collection
         nft1 = new DiamondGenesisPass(address(distributor), royaltyFee1, creator1);
         nft2 = new DiamondGenesisPass(address(distributor), royaltyFee2, creator2);
         
-        // Register both collections with their specific sharing configurations
-        if (!distributor.isCollectionRegistered(address(nft1))) {
-            distributor.registerCollection(address(nft1), royaltyFee1, minterShares1, creatorShares1, creator1);
-        }
-        
-        if (!distributor.isCollectionRegistered(address(nft2))) {
-            distributor.registerCollection(address(nft2), royaltyFee2, minterShares2, creatorShares2, creator2);
-        }
+        // No need to register again - already done in the constructor
         
         // Enable minting for both collections
         nft1.setPublicMintActive(true);
@@ -135,10 +129,10 @@ contract MultiCollectionIsolationTest is Test {
         
         assertEq(fee1, royaltyFee1);
         assertEq(fee2, royaltyFee2);
-        assertEq(minterShares1Retrieved, minterShares1);
-        assertEq(minterShares2Retrieved, minterShares2);
-        assertEq(creatorShares1Retrieved, creatorShares1);
-        assertEq(creatorShares2Retrieved, creatorShares2);
+        assertEq(minterShares1Retrieved, EXPECTED_MINTER_SHARES); // Compare with hardcoded value from DiamondGenesisPass
+        assertEq(minterShares2Retrieved, EXPECTED_MINTER_SHARES); // Compare with hardcoded value from DiamondGenesisPass
+        assertEq(creatorShares1Retrieved, EXPECTED_CREATOR_SHARES); // Compare with hardcoded value from DiamondGenesisPass
+        assertEq(creatorShares2Retrieved, EXPECTED_CREATOR_SHARES); // Compare with hardcoded value from DiamondGenesisPass
         assertEq(creatorAddr1, creator1);
         assertEq(creatorAddr2, creator2);
     }

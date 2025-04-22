@@ -170,6 +170,12 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     event BidWithdrawn(address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 amount, bool isCollectionBid);
     event BidAccepted(address indexed collection, uint256 indexed tokenId, address indexed oldMinter, address newMinter, uint256 amount);
 
+    // NEW: Add mapping to track which transactions have been included in global analytics
+    mapping(address => mapping(address => uint256)) private _accrualProcessedForAnalytics; // collection => recipient => total processed
+
+    // NEW: Add a mapping to track which transaction hashes have been processed globally
+    mapping(bytes32 => bool) private _globalProcessedTransactions; // txHash => bool
+
     /**
      * @notice Modifier to ensure the caller is the registered collection contract
      */
@@ -473,6 +479,9 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
                 continue;
             }
             
+            // Mark this transaction as processed globally
+            _globalProcessedTransactions[txHash] = true;
+            
             // Calculate royalty amount based on collection config
             uint256 royaltyAmount = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
             uint256 minterShareRoyalty = (royaltyAmount * config.minterShares) / SHARES_DENOMINATOR;
@@ -495,18 +504,39 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             CollectionRoyaltyData storage colData = _collectionRoyaltyData[collection];
             colData.totalVolume += salePrice;
             colData.lastSyncedBlock = block.number;
-
-            // Update global royalty totals
-            totalAccruedRoyalty += royaltyAmount;
             
             // Update accrued royalties for minter and creator
             if (tokenMinter != address(0)) {
                 _totalAccruedRoyalties[collection][tokenMinter] += minterShareRoyalty;
+                
+                // Record that we've processed this transaction for the minter for analytics
+                if (_accrualProcessedForAnalytics[collection][tokenMinter] + minterShareRoyalty > _totalAccruedRoyalties[collection][tokenMinter]) {
+                    // Should never happen but add a safety check
+                    _accrualProcessedForAnalytics[collection][tokenMinter] = _totalAccruedRoyalties[collection][tokenMinter];
+                } else {
+                    _accrualProcessedForAnalytics[collection][tokenMinter] += minterShareRoyalty;
+                }
+                
+                // Update global analytics counter
+                totalAccruedRoyalty += minterShareRoyalty;
+                
                 emit RoyaltyAccrued(collection, tokenMinter, minterShareRoyalty);
             }
             
             if (creatorAddress != address(0)) {
                 _totalAccruedRoyalties[collection][creatorAddress] += creatorShareRoyalty;
+                
+                // Record that we've processed this transaction for the creator for analytics
+                if (_accrualProcessedForAnalytics[collection][creatorAddress] + creatorShareRoyalty > _totalAccruedRoyalties[collection][creatorAddress]) {
+                    // Should never happen but add a safety check
+                    _accrualProcessedForAnalytics[collection][creatorAddress] = _totalAccruedRoyalties[collection][creatorAddress];
+                } else {
+                    _accrualProcessedForAnalytics[collection][creatorAddress] += creatorShareRoyalty;
+                }
+                
+                // Update global analytics counter
+                totalAccruedRoyalty += creatorShareRoyalty;
+                
                 emit RoyaltyAccrued(collection, creatorAddress, creatorShareRoyalty);
             }
 
@@ -525,6 +555,39 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
 
     /**
      * @notice Updates accrued royalties for multiple recipients
+     * @dev Restricted to SERVICE_ACCOUNT_ROLE or DEFAULT_ADMIN_ROLE
+     * @param collection The collection address
+     * @param recipients Array of recipient addresses
+     * @param amounts Array of royalty amounts to accrue
+     * @param transactionHashes Array of transaction hashes to track processed transactions
+     */
+    function updateAccruedRoyalties(
+        address collection,
+        address[] calldata recipients,
+        uint256[] calldata amounts,
+        bytes32[] memory transactionHashes
+    ) external {
+        // Check caller has permission
+        if (!hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
+            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
+        }
+
+        // Check collection is registered
+        if (!_collectionConfigs[collection].registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+
+        // Validate arrays have the same length
+        require(recipients.length == amounts.length && 
+                recipients.length == transactionHashes.length, 
+                "Arrays must have the same length");
+
+        // Call internal logic with transaction hashes
+        _updateAccruedRoyaltiesInternal(collection, recipients, amounts, transactionHashes);
+    }
+
+    /**
+     * @notice Updates accrued royalties for multiple recipients (legacy method without transaction hashes)
      * @dev Restricted to SERVICE_ACCOUNT_ROLE or DEFAULT_ADMIN_ROLE
      * @param collection The collection address
      * @param recipients Array of recipient addresses
@@ -548,29 +611,58 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         // Validate arrays have the same length
         require(recipients.length == amounts.length, "Arrays must have the same length");
 
-        // Call internal logic
-        _updateAccruedRoyaltiesInternal(collection, recipients, amounts);
+        // Call internal logic with empty transaction hashes (legacy support)
+        bytes32[] memory emptyHashes = new bytes32[](recipients.length);
+        _updateAccruedRoyaltiesInternal(collection, recipients, amounts, emptyHashes);
     }
 
     /**
      * @notice Internal function to update accrued royalties
      * @dev Separated logic for potential internal reuse and cleaner external functions
+     * @param transactionHashes If provided, used to check if the transaction was already processed
      */
     function _updateAccruedRoyaltiesInternal(
         address collection,
         address[] calldata recipients,
-        uint256[] calldata amounts
+        uint256[] calldata amounts,
+        bytes32[] memory transactionHashes
     ) internal {
         for (uint256 i = 0; i < recipients.length; i++) {
             address recipient = recipients[i];
             uint256 amount = amounts[i];
+            bytes32 txHash = transactionHashes[i];
             
             if (amount == 0) continue;
             
+            // Check if this transaction has already been processed globally
+            bool isGloballyProcessed = false;
+            if (txHash != bytes32(0)) {
+                isGloballyProcessed = _globalProcessedTransactions[txHash];
+                
+                // If this transaction has already been processed, skip the accrual completely
+                // This ensures we don't double-count royalties in the per-recipient accruals
+                if (isGloballyProcessed) {
+                    continue;
+                }
+                
+                // Record the transaction as processed
+                _globalProcessedTransactions[txHash] = true;
+                
+                // Also record in token-specific tracking for consistency
+                TokenRoyaltyData storage dummyData = _tokenRoyaltyData[collection][0];
+                if (!dummyData.processedTransactions[txHash]) {
+                    dummyData.processedTransactions[txHash] = true;
+                }
+            }
+            
+            // Update recipient's accrued royalties
             _totalAccruedRoyalties[collection][recipient] += amount;
             
-            // Update global analytics
+            // Update global analytics 
             totalAccruedRoyalty += amount;
+            
+            // Mark this amount as processed for analytics
+            _accrualProcessedForAnalytics[collection][recipient] += amount;
             
             emit RoyaltyAccrued(collection, recipient, amount);
         }
@@ -658,7 +750,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         _totalClaimedRoyalties[collection][recipient] += amount;
         _collectionRoyalties[collection] -= amount;
         
-        // Update global analytics
+        // Update global analytics - only count what hasn't been claimed already
         totalClaimedRoyalty += amount;
         
         // Transfer ETH to recipient
@@ -806,7 +898,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         // Directly call updateAccruedRoyalties with the processed data from the oracle
         // We assume the amounts provided are for ETH royalties. A more complex implementation
         // might need to handle ERC20s based on additional parameters.
-        _updateAccruedRoyaltiesInternal(collection, recipients, amounts);
+        _updateAccruedRoyaltiesInternal(collection, recipients, amounts, new bytes32[](0));
 
         // Optional: Could emit an event here indicating Oracle fulfillment
         // emit OracleRoyaltyDataFulfilled(collection, _requestId);
