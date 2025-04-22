@@ -276,7 +276,21 @@ contract DeploymentAndLifecycleFlowTest is Test {
         vm.prank(service);
         nft.recordSale(3, SALE_PRICE);
         
-        // Service account updates royalty data
+        // Simulate marketplace sending royalty payment to distributor
+        uint256 royaltyAmount = (SALE_PRICE * ROYALTY_FEE) / 10000;
+        address marketplace = address(0x789);
+        vm.deal(marketplace, royaltyAmount);
+        vm.prank(marketplace);
+        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
+        
+        // Verify royalty pool was updated
+        assertEq(distributor.getCollectionRoyalties(address(nft)), royaltyAmount);
+        
+        // =====================================================================
+        // STEP 7: ROYALTY DISTRIBUTION & CLAIMS
+        // =====================================================================
+        
+        // Service account updates royalty data - this will also accrue royalties to the minter and creator
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
@@ -296,39 +310,9 @@ contract DeploymentAndLifecycleFlowTest is Test {
             txHashes
         );
         
-        // Simulate marketplace sending royalty payment to distributor
-        uint256 royaltyAmount = (SALE_PRICE * ROYALTY_FEE) / 10000;
-        address marketplace = address(0x789);
-        vm.deal(marketplace, royaltyAmount);
-        vm.prank(marketplace);
-        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
-        
-        // Verify royalty pool was updated
-        assertEq(distributor.getCollectionRoyalties(address(nft)), royaltyAmount);
-        
-        // =====================================================================
-        // STEP 7: ROYALTY DISTRIBUTION & CLAIMS
-        // =====================================================================
-        
         // Calculate expected shares
         uint256 minterRoyalty = (royaltyAmount * MINTER_SHARES) / 10000;
         uint256 creatorRoyalty = (royaltyAmount * CREATOR_SHARES) / 10000;
-        
-        // Submit the royalty information
-        vm.prank(service);
-        
-        // Create arrays for recipients and amounts
-        address[] memory recipients = new address[](2);
-        uint256[] memory amounts = new uint256[](2);
-        
-        // Set up for minter and creator
-        recipients[0] = publicMinter;
-        recipients[1] = creator;
-        amounts[0] = minterRoyalty;
-        amounts[1] = creatorRoyalty;
-        
-        // Update accrued royalties directly
-        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
         
         // Verify royalties were accrued correctly by checking claimable amounts
         assertEq(distributor.getClaimableRoyalties(address(nft), publicMinter), minterRoyalty);

@@ -293,7 +293,6 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         // Simulate a sale by directly updating accrued royalties
         address[] memory recipients = new address[](2);
         uint256[] memory amounts = new uint256[](2);
-        bytes32[] memory txHashes = new bytes32[](2);
         
         recipients[0] = user1; // minter
         recipients[1] = creator; // creator
@@ -303,12 +302,9 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         amounts[0] = 0.015 ether;
         amounts[1] = 0.06 ether;
         
-        txHashes[0] = keccak256("tx1");
-        txHashes[1] = keccak256("tx1");
-        
-        // Update accrued royalties
+        // Use simple approach without transaction hashes to avoid deduplication issues
         vm.prank(service);
-        distributor.updateAccruedRoyalties(address(nft), recipients, amounts, txHashes);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
         
         // Check claimable royalties
         uint256 user1Claimable = distributor.getClaimableRoyalties(address(nft), user1);
