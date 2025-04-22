@@ -445,9 +445,11 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             uint256 royaltyAmount        = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
             uint256 minterShareRoyalty   = (royaltyAmount * config.minterShares)  / SHARES_DENOMINATOR;
             uint256 creatorShareRoyalty  = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
-            uint256 minterShareSale      = (salePrice    * config.minterShares)  / SHARES_DENOMINATOR;
-            uint256 creatorShareSale     = (salePrice    * config.creatorShares) / SHARES_DENOMINATOR;
-            
+
+            /*  NEW: shares relative to full sale price for on‑chain analytics  */
+            uint256 minterShareSale     = (salePrice * config.minterShares)  / SHARES_DENOMINATOR;
+            uint256 creatorShareSale    = (salePrice * config.creatorShares) / SHARES_DENOMINATOR;
+
             // Update token data
             tokenData.transactionCount     += 1;
             tokenData.totalVolume          += salePrice;
@@ -457,12 +459,12 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             tokenData.processedTransactions[txHash] = true;
             
             // Update collection data (Total Volume and Last Sync Block Only)
-            CollectionRoyaltyData storage collectionData = _collectionRoyaltyData[collection];
-            collectionData.totalVolume      += salePrice;
-            collectionData.lastSyncedBlock   = block.number;
-            
-            // --- On‑chain analytics update ---
-            totalAccruedRoyalty             += royaltyAmount;
+            CollectionRoyaltyData storage colData = _collectionRoyaltyData[collection];
+            colData.totalVolume      += salePrice;
+            colData.lastSyncedBlock   = block.number;
+
+            /*  NEW: accrue total royalty amount (not full sales volume) */
+            totalAccruedRoyalty    += royaltyAmount;
 
             // Emit detailed attribution event
             emit RoyaltyAttributed(
@@ -823,6 +825,23 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
 
     function totalClaimed() external view returns (uint256) {
         return totalClaimedRoyalty;
+    }
+
+    /**
+     * @notice Returns the total amount of royalties that have been accrued but not yet claimed
+     * @return The total unclaimed royalties across all collections
+     */
+    function totalUnclaimed() external view returns (uint256) {
+        return totalAccruedRoyalty - totalClaimedRoyalty;
+    }
+
+    /**
+     * @notice Returns the unclaimed royalties for a specific collection
+     * @param collection The collection address
+     * @return The amount of ETH royalties that can be claimed for this collection
+     */
+    function collectionUnclaimed(address collection) external view returns (uint256) {
+        return _collectionRoyalties[collection];
     }
 
     /**

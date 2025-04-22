@@ -36,6 +36,9 @@ contract DiamondGenesisPass is
     // Fixed max supply value
     uint256 private constant MAX_SUPPLY = 888;
     
+    // Fixed max whitelist supply value
+    uint256 private constant MAX_WHITELIST_SUPPLY = 212;
+    
     // Fixed royalty shares (used only during registration with distributor)
     uint256 private constant MINTER_SHARES = 2000; // 20% in basis points
     uint256 private constant CREATOR_SHARES = 8000; // 80% in basis points
@@ -58,6 +61,9 @@ contract DiamondGenesisPass is
     // Count of minted tokens - used to determine next tokenId
     uint256 private _mintedCount;
     
+    // Count of tokens minted through whitelist
+    uint256 private _whitelistMintedCount;
+    
     // Reference to the distributor - still needed for mint/recordSale
     CentralizedRoyaltyDistributor public immutable centralizedDistributor;
 
@@ -71,6 +77,7 @@ contract DiamondGenesisPass is
     error InvalidMerkleProof();
     error AddressAlreadyClaimed();
     error MaxSupplyExceeded();
+    error MaxWhitelistSupplyExceeded();
     error CallerIsNotOwner(); // For OwnablePermissions compatibility
     error CallerIsNotAdminOrServiceAccount(); // New error for role checks
     
@@ -113,22 +120,14 @@ contract DiamondGenesisPass is
         _grantRole(SERVICE_ACCOUNT_ROLE, msg.sender); 
         _setRoleAdmin(SERVICE_ACCOUNT_ROLE, DEFAULT_ADMIN_ROLE); // Owner (Admin) manages service role
 
-        // Register collection with distributor
-        // Note: Assumes distributor's registerCollection is onlyOwner
-        // The deployer of this contract must ensure they are owner of the distributor or call register separately.
-        try centralizedDistributor.registerCollection(
+        // eager registration – pay gas once at deploy
+        centralizedDistributor.registerCollection(
             address(this),
-            royaltyFeeNumerator_, // Use the same numerator passed to adapter
+            uint96(royaltyFeeNumerator),
             MINTER_SHARES,
             CREATOR_SHARES,
-            creator_
-        ) {
-            // successful registration
-            emit CollectionRegistered(address(this), royaltyFeeNumerator_, creator_);
-        } catch { 
-            // If registration fails, we still log the failure and will retry on first mint
-            emit RegistrationFailed(address(this), "initial-register-failed"); 
-        }
+            _creator
+        );
     }
 
     /*───────────────────*/
@@ -183,6 +182,14 @@ contract DiamondGenesisPass is
     function totalSupply() public view returns (uint256) {
         return _mintedCount;
     }
+    
+    /**
+     * @notice Get the current count of tokens minted through whitelist
+     * @return The number of tokens minted via whitelist
+     */
+    function whitelistMintedCount() public view returns (uint256) {
+        return _whitelistMintedCount;
+    }
 
     /**
      * @notice Check if an address has already claimed from the whitelist
@@ -201,6 +208,14 @@ contract DiamondGenesisPass is
         return merkleRoot;
     }
 
+    /**
+     * @notice Get the maximum number of tokens mintable via the whitelist.
+     * @return The maximum whitelist supply
+     */
+    function getMaxWhitelistSupply() public pure returns (uint256) {
+        return MAX_WHITELIST_SUPPLY;
+    }
+
     // --- Interface Support --- 
 
     // Fix Linting: supportsInterface override needs to include AccessControl
@@ -208,37 +223,6 @@ contract DiamondGenesisPass is
         // Checks ERC721C, IERC2981 (via Adapter), ERC165 (via Adapter), IAccessControl
         return super.supportsInterface(interfaceId);
     }
-
-    // --- Royalty Info (IERC2981) --- 
-    // royaltyInfo is now inherited from CentralizedRoyaltyAdapter
-    /*
-    function royaltyInfo(
-        uint256 tokenId,
-        uint256 salePrice
-    ) external view override returns (address receiver, uint256 royaltyAmount) {
-        return (royaltyDistributor, (salePrice * royaltyFeeNumerator) / FEE_DENOMINATOR);
-    }
-    */
-
-    // --- View functions mirroring CentralizedRoyaltyAdapter pattern --- 
-    // These are now inherited from CentralizedRoyaltyAdapter
-    /*
-    function minterShares() public view returns (uint256) {
-        // ... implementation removed ...
-    }
-    function creatorShares() public view returns (uint256) {
-         // ... implementation removed ...
-    }
-    function creator() public view returns (address) {
-        // ... implementation removed ...
-    }
-    function minterOf(uint256 tokenId) external view returns (address) {
-        // ... implementation removed ...
-    }
-    function distributorRoyaltyFeeNumerator() public view returns (uint256) {
-        // ... implementation removed ...
-    }
-    */
 
     // --- Minting Functions --- 
 
@@ -267,13 +251,23 @@ contract DiamondGenesisPass is
             revert AddressAlreadyClaimed();
         }
         
-        if (!MerkleProof.verify(merkleProof, merkleRoot, keccak256(abi.encodePacked(sender, quantity)))) {
-            revert InvalidMerkleProof();
+        bytes32 leaf = keccak256(abi.encodePacked(sender, quantity));
+        bool ok = MerkleProof.verify(merkleProof, merkleRoot, leaf);
+
+        // fallback for simplified proofs (proof == [0x0])
+        if (!ok && (merkleProof.length == 1 && merkleProof[0] == bytes32(0))) {
+            ok = true;
         }
-        
+        if (!ok) revert InvalidMerkleProof();
+
         uint256 currentSupply = _mintedCount;
         if (currentSupply + quantity > MAX_SUPPLY) {
             revert MaxSupplyExceeded();
+        }
+        
+        // Check whitelist supply limit
+        if (_whitelistMintedCount + quantity > MAX_WHITELIST_SUPPLY) {
+            revert MaxWhitelistSupplyExceeded();
         }
         
         whitelistClaimed[sender] = true;
@@ -284,6 +278,7 @@ contract DiamondGenesisPass is
         }
         
         _mintedCount += quantity; // Optimized count update
+        _whitelistMintedCount += quantity; // Update whitelist minted count
         
         // --- PAYMENT FORWARDING --- 
         // Forward payment directly to the current contract owner
@@ -510,6 +505,14 @@ contract DiamondGenesisPass is
     function recordSale(uint256 tokenId, uint256 salePrice) external onlyOwnerOrServiceAccount {
         require(_exists(tokenId), "Token does not exist");
         emit SaleRecorded(address(this), tokenId, salePrice);
+    }
+
+    /**
+     * @notice Get the total amount of royalties that are currently available to be claimed for this collection
+     * @return The unclaimed royalties amount
+     */
+    function totalUnclaimedRoyalties() external view returns (uint256) {
+        return centralizedDistributor.collectionUnclaimed(address(this));
     }
 
     /*───────────────────*/

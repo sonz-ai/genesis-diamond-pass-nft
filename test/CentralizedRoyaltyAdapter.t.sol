@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
@@ -23,19 +24,19 @@ contract CentralizedRoyaltyAdapterTest is Test {
         vm.stopPrank();
     }
 
-    function testSupportsInterfaceIERC2981() public {
+    function testSupportsInterfaceIERC2981() public view {
         // IERC2981 interface should be supported via adapter
         assertTrue(nft.supportsInterface(type(IERC2981).interfaceId));
     }
 
-    function testRoyaltyInfoReturnsDistributorAndCorrectAmount() public {
+    function testRoyaltyInfoReturnsDistributorAndCorrectAmount() public view {
         // 2 ETH sale price => royalty = 2 ETH * 10% = 0.2 ETH
         (address receiver, uint256 amount) = nft.royaltyInfo(1, 2 ether);
         assertEq(receiver, address(distributor));
         assertEq(amount, (2 ether * 1000) / 10000);
     }
 
-    function testHelperViewsReturnCorrectConfig() public {
+    function testHelperViewsReturnCorrectConfig() public view {
         // minterShares and creatorShares from distributor
         assertEq(nft.minterShares(), 2000);
         assertEq(nft.creatorShares(), 8000);
@@ -52,7 +53,7 @@ contract CentralizedRoyaltyAdapterTest is Test {
         assertEq(nft.minterOf(1), user1);
     }
 
-    function testActiveMerkleRootInitiallyZero() public {
+    function testActiveMerkleRootInitiallyZero() public view {
         // No merkle roots submitted yet
         assertEq(nft.activeMerkleRoot(), bytes32(0));
     }

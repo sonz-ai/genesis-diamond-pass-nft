@@ -287,10 +287,11 @@ contract IntegrationTestFixes is Test {
         mockERC20.grantRole(MINTER_ROLE, address(this));
         vm.stopPrank();
         
-        // Mint tokens to this contract for testing
-        mockERC20.mint(address(this), erc20RoyaltyAmount);
+        // Mint tokens to admin for testing (rather than to the test contract)
+        mockERC20.mint(admin, erc20RoyaltyAmount);
         
-        // Approve the distributor to spend tokens from this contract
+        // Have admin approve the distributor to spend tokens
+        vm.prank(admin);
         mockERC20.approve(address(distributor), erc20RoyaltyAmount);
         
         // Add the ERC20 royalties to the collection
@@ -317,6 +318,7 @@ contract IntegrationTestFixes is Test {
         );
         
         // Submit the ERC20 Merkle root
+        // Note: The totalAmount must not exceed what's available in the distributor
         vm.prank(service);
         distributor.submitRoyaltyMerkleRoot(address(nft), erc20MerkleRoot, erc20RoyaltyAmount);
         

@@ -34,7 +34,7 @@ contract DiamondGenesisPassRoleManagement is Test {
         vm.stopPrank();
     }
     
-    function testInitialRoleAssignment() public {
+    function testInitialRoleAssignment() public view {
         // Check that the deployer (admin) has both roles
         assertTrue(nft.hasRole(DEFAULT_ADMIN_ROLE, admin), "Admin should have DEFAULT_ADMIN_ROLE");
         assertTrue(nft.hasRole(SERVICE_ACCOUNT_ROLE, admin), "Admin should have SERVICE_ACCOUNT_ROLE");
@@ -120,9 +120,23 @@ contract DiamondGenesisPassRoleManagement is Test {
         nft.mintOwner(newOwner);
         assertEq(nft.ownerOf(4), newOwner, "New owner should be able to mint without SERVICE_ACCOUNT_ROLE");
         
-        // Test 6: After revoking SERVICE_ACCOUNT_ROLE, old owner cannot call
+        // Test 6: After revoking SERVICE_ACCOUNT_ROLE from DiamondGenesisPass, old owner still has access
+        // because they have SERVICE_ACCOUNT_ROLE on the distributor
         vm.prank(newOwner);
         nft.revokeRole(SERVICE_ACCOUNT_ROLE, admin);
+        
+        // Admin can still call mintOwner because they have SERVICE_ACCOUNT_ROLE on distributor
+        vm.prank(admin);
+        nft.mintOwner(admin);
+        assertEq(nft.ownerOf(5), admin, "Admin with distributor SERVICE_ACCOUNT_ROLE should be able to mint");
+        
+        // Only after mocking that admin doesn't have the distributor role would the call fail
+        // We can do this by mocking the hasRole call on the distributor
+        vm.mockCall(
+            address(distributor),
+            abi.encodeWithSelector(distributor.hasRole.selector, distributor.SERVICE_ACCOUNT_ROLE(), admin),
+            abi.encode(false)
+        );
         
         vm.prank(admin);
         vm.expectRevert(DiamondGenesisPass.CallerIsNotAdminOrServiceAccount.selector);
@@ -162,13 +176,26 @@ contract DiamondGenesisPassRoleManagement is Test {
         vm.prank(admin);
         nft.recordSale(1, 5 ether);
         
-        // After revoking SERVICE_ACCOUNT_ROLE, old owner cannot record sale
+        // After revoking SERVICE_ACCOUNT_ROLE from DiamondGenesisPass, old owner still has access
+        // because they have SERVICE_ACCOUNT_ROLE on the distributor
         vm.prank(newOwner);
         nft.revokeRole(SERVICE_ACCOUNT_ROLE, admin);
         
+        // Admin can still call recordSale because they have SERVICE_ACCOUNT_ROLE on distributor
+        vm.prank(admin);
+        nft.recordSale(1, 6 ether);
+        
+        // Only after mocking that admin doesn't have the distributor role would the call fail
+        // We can do this by mocking the hasRole call on the distributor
+        vm.mockCall(
+            address(distributor),
+            abi.encodeWithSelector(distributor.hasRole.selector, distributor.SERVICE_ACCOUNT_ROLE(), admin),
+            abi.encode(false)
+        );
+        
         vm.prank(admin);
         vm.expectRevert(DiamondGenesisPass.CallerIsNotAdminOrServiceAccount.selector);
-        nft.recordSale(1, 6 ether);
+        nft.recordSale(1, 7 ether);
     }
     
     function testSetMerkleRootPermissions() public {

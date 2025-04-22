@@ -28,6 +28,10 @@ Our solution uses a three-contract system with refined access control:
     *   Uses **OpenZeppelin's `Ownable`** for primary contract ownership (e.g., setting Merkle root, public mint status, burning tokens). The `owner()` will typically be a multisig post-deployment and will receive primary mint payments.
     *   Uses **OpenZeppelin's `AccessControl`** to define a `SERVICE_ACCOUNT_ROLE` for delegated tasks (e.g., owner minting). This role is managed by the `DEFAULT_ADMIN_ROLE`, which should be granted to the `owner()`.
     *   **Key Responsibility:** Manages NFT logic, directs secondary market royalties via `royaltyInfo`, records minters with the distributor, **forwards primary mint payments (`msg.value`) directly to the current `owner()` address**, and enforces distinct permissions for Owner and Service Account roles.
+    *   **Supply Management:**
+        * **Total Maximum Supply:** 888 tokens
+        * **Whitelist Mint Maximum Supply:** 212 tokens
+        * **Public Mint Supply:** Remaining tokens (676 tokens) after whitelist phase
 
 *   **`CentralizedRoyaltyAdapter.sol` (Pattern Contract - Implemented by DiamondGenesisPass):**
     *   Defines the standard interface and logic for an NFT contract to interact with the `CentralizedRoyaltyDistributor`.
@@ -138,6 +142,9 @@ Our solution uses a three-contract system with refined access control:
 *   **View Functions (gas-free external calls):**
     *   `function totalAccrued() external view returns (uint256) { return totalAccruedRoyalty; }`
     *   `function totalClaimed() external view returns (uint256) { return totalClaimedRoyalty; }`
+    *   `function totalUnclaimed() external view returns (uint256) { return totalAccruedRoyalty - totalClaimedRoyalty; }`
+    *   `function collectionUnclaimed(address collection) external view returns (uint256) { return _collectionRoyalties[collection]; }`
+    *   `function totalUnclaimedRoyalties() external view returns (uint256)` // On DiamondGenesisPass, returns the collection-specific unclaimed amount
     *   _Per-recipient analytics are derived off-chain via emitted events (MerkleRootSubmitted, MerkleRoyaltyClaimed, RoyaltyAttributed)._  
     *   **Off-Chain Analytics Workflow:**
         - **Events:** `RoyaltyAttributed`, `MerkleRootSubmitted`, `MerkleRoyaltyClaimed`

@@ -13,7 +13,6 @@ import "src/DiamondGenesisPass.sol";
 
 contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
     // Declare event signature for expectEmit
-    // Emitted emitted; // Remove this line
     CentralizedRoyaltyDistributor distributor;
     DiamondGenesisPass nft;
     address admin = address(0xA11CE);

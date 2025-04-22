@@ -55,9 +55,9 @@ contract FullLifecycleRoyaltyFlowTest is Test {
         vm.prank(buyer1);
         nft.approve(buyer2, 1);
         
-        // Simulate the sale by transferring the NFT
+        // Simulate the sale by transferring the NFT using safeTransferFrom
         vm.prank(buyer1);
-        nft.transferFrom(buyer1, buyer2, 1);
+        nft.safeTransferFrom(buyer1, buyer2, 1);
         
         // Verify transfer was successful
         assertEq(nft.ownerOf(1), buyer2);

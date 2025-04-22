@@ -15,7 +15,7 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
     address creator = address(0xC0FFEE);
     address user1 = address(0x1);
     address user2 = address(0x2);
-    uint96 royaltyNum = 750; // 7.5%
+    uint96 royaltyNum = 1000; // 10%
 
     function setUp() public {
         // Deploy and configure
@@ -74,10 +74,20 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         bytes32[] memory txHashes = new bytes32[](1);
         txHashes[0] = keccak256(abi.encodePacked("sale1"));
 
+        // Calculate expected royalty values
+        // royaltyNum = 1000 (10% of sale price)
+        // minterShares = 2000 (20% of royalty)
+        // creatorShares = 8000 (80% of royalty)
+        uint256 FEE_DENOMINATOR = 10000;
+        uint256 SHARES_DENOMINATOR = 10000;
+        uint256 royaltyAmount = (1 ether * royaltyNum) / FEE_DENOMINATOR; // 0.1 ether
+        uint256 minterShareRoyalty = (royaltyAmount * 2000) / SHARES_DENOMINATOR; // 0.02 ether
+        uint256 creatorShareRoyalty = (royaltyAmount * 8000) / SHARES_DENOMINATOR; // 0.08 ether
+
         // Expect event and execute
         vm.startPrank(service);
         vm.expectEmit(true, true, false, true);
-        emit RoyaltyAttributed(address(nft), 1, user1, 1 ether, 15000000000000000, 60000000000000000, txHashes[0]);
+        emit RoyaltyAttributed(address(nft), 1, user1, 1 ether, minterShareRoyalty, creatorShareRoyalty, txHashes[0]);
         distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
         vm.stopPrank();
 
@@ -86,13 +96,13 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         assertEq(minter, user1);
         assertEq(count, 1);
         assertEq(vol, 1 ether);
-        assertEq(mEarned, (1 ether * 2000) / 10000);
-        assertEq(cEarned, (1 ether * 8000) / 10000);
+        assertEq(mEarned, minterShareRoyalty);
+        assertEq(cEarned, creatorShareRoyalty);
 
         // Validate collection-level analytics
         (uint256 colVol, , ) = distributor.getCollectionRoyaltyData(address(nft));
         assertEq(colVol, 1 ether);
-        assertEq(distributor.totalAccrued(), 1 ether);
+        assertEq(distributor.totalAccrued(), royaltyAmount);
     }
 
     // Unauthorized batch update reverts
@@ -131,14 +141,26 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
 
     // invalid claim proof revert
     function testInvalidClaimProof() public {
-        bytes32 root = keccak256(abi.encodePacked(user1, uint256(1 ether)));
+        // Create a valid merkle root for a specific user and amount
+        bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(1 ether)));
+        bytes32 root = leaf; // Simplified root for testing
+        
+        // Fund the distributor
+        vm.deal(service, 1 ether);
         vm.prank(service);
         distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
+        
+        // Submit the merkle root
         vm.prank(service);
         distributor.submitRoyaltyMerkleRoot(address(nft), root, 1 ether);
+        
+        // Try to claim with invalid proof
+        bytes32[] memory invalidProof = new bytes32[](1);
+        invalidProof[0] = bytes32(uint256(0xdeadbeef)); // Invalid proof
+        
         vm.prank(user1);
         vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__InvalidProof.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 1 ether, new bytes32[](1));
+        distributor.claimRoyaltiesMerkle(address(nft), user1, 1 ether, invalidProof);
     }
 
     // totalClaimed analytics update

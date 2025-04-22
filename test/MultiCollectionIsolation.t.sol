@@ -20,6 +20,11 @@ contract MultiCollectionIsolationTest is Test {
     uint96 royaltyFee1 = 750; // 7.5%
     uint96 royaltyFee2 = 500; // 5.0%
     
+    uint256 minterShares1 = 2000; // 20%
+    uint256 creatorShares1 = 8000; // 80% 
+    uint256 minterShares2 = 3000; // 30%
+    uint256 creatorShares2 = 7000; // 70%
+    
     function setUp() public {
         // Deploy distributor and set up roles
         vm.startPrank(admin);
@@ -30,13 +35,13 @@ contract MultiCollectionIsolationTest is Test {
         nft1 = new DiamondGenesisPass(address(distributor), royaltyFee1, creator1);
         nft2 = new DiamondGenesisPass(address(distributor), royaltyFee2, creator2);
         
-        // Register both collections only if not already registered
+        // Register both collections with their specific sharing configurations
         if (!distributor.isCollectionRegistered(address(nft1))) {
-            distributor.registerCollection(address(nft1), royaltyFee1, 2000, 8000, creator1);
+            distributor.registerCollection(address(nft1), royaltyFee1, minterShares1, creatorShares1, creator1);
         }
         
         if (!distributor.isCollectionRegistered(address(nft2))) {
-            distributor.registerCollection(address(nft2), royaltyFee2, 3000, 7000, creator2);
+            distributor.registerCollection(address(nft2), royaltyFee2, minterShares2, creatorShares2, creator2);
         }
         
         // Enable minting for both collections
@@ -100,17 +105,17 @@ contract MultiCollectionIsolationTest is Test {
         assertEq(distributor.getCollectionRoyalties(address(nft2)), 0.25 ether);
         
         // Verify collection configurations remain distinct
-        (uint256 fee1, uint256 minterShares1, uint256 creatorShares1, address creatorAddr1) = 
+        (uint256 fee1, uint256 minterShares1Retrieved, uint256 creatorShares1Retrieved, address creatorAddr1) = 
             distributor.getCollectionConfig(address(nft1));
-        (uint256 fee2, uint256 minterShares2, uint256 creatorShares2, address creatorAddr2) = 
+        (uint256 fee2, uint256 minterShares2Retrieved, uint256 creatorShares2Retrieved, address creatorAddr2) = 
             distributor.getCollectionConfig(address(nft2));
         
         assertEq(fee1, royaltyFee1);
         assertEq(fee2, royaltyFee2);
-        assertEq(minterShares1, 2000);
-        assertEq(minterShares2, 3000);
-        assertEq(creatorShares1, 8000);
-        assertEq(creatorShares2, 7000);
+        assertEq(minterShares1Retrieved, minterShares1);
+        assertEq(minterShares2Retrieved, minterShares2);
+        assertEq(creatorShares1Retrieved, creatorShares1);
+        assertEq(creatorShares2Retrieved, creatorShares2);
         assertEq(creatorAddr1, creator1);
         assertEq(creatorAddr2, creator2);
     }
