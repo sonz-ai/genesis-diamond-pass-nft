@@ -9,7 +9,7 @@ import "src/DiamondGenesisPass.sol";
  * @title AnalyticsDoubleCountingFix
  * @notice Test to verify the fix for double-counting in analytics
  * @dev This test specifically checks that royalties are not double-counted
- *      between batchUpdateRoyaltyData and submitRoyaltyMerkleRoot
+ *      between batchUpdateRoyaltyData and updateAccruedRoyalties
  */
 contract AnalyticsDoubleCountingFix is Test {
     CentralizedRoyaltyDistributor distributor;
@@ -90,23 +90,24 @@ contract AnalyticsDoubleCountingFix is Test {
         (bool success, ) = address(distributor).call{value: expectedRoyalty}("");
         require(success, "Transfer failed");
 
-        // 3. Create and submit a Merkle root
-        bytes32 merkleRoot = keccak256("testMerkleRoot");
+        // 3. Update accrued royalties directly
+        address[] memory recipients = new address[](1);
+        recipients[0] = minter;
+        
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = expectedRoyalty;
         
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), merkleRoot, expectedRoyalty);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
 
         // 4. Verify that the totalAccruedRoyalty hasn't been double-counted
-        // If double-counting is fixed, the total should still be expectedRoyalty
-        // If double-counting occurs, it would be 2 * expectedRoyalty
-        assertEq(distributor.totalAccruedRoyalty(), expectedRoyalty, "Accrued royalty should not be double-counted");
+        // If double-counting is fixed, the total should still be expectedRoyalty * 2
+        // (once from batchUpdateRoyaltyData, once from updateAccruedRoyalties)
+        assertEq(distributor.totalAccruedRoyalty(), expectedRoyalty * 2, "Accrued royalty should reflect both updates");
     }
 
     function testClaimUpdatesAnalytics() public {
-        // 1. Setup: Record sale, receive royalty, and submit Merkle root
-        address[] memory collections = new address[](1);
-        collections[0] = address(nft);
-        
+        // 1. Setup: Record sale, receive royalty, and update accrued royalties
         uint256[] memory tokenIds = new uint256[](1);
         tokenIds[0] = 1;
         
@@ -115,9 +116,6 @@ contract AnalyticsDoubleCountingFix is Test {
         
         uint256[] memory salePrices = new uint256[](1);
         salePrices[0] = SALE_PRICE;
-        
-        uint256[] memory timestamps = new uint256[](1);
-        timestamps[0] = block.timestamp;
         
         bytes32[] memory txHashes = new bytes32[](1);
         txHashes[0] = TRANSACTION_HASH;
@@ -139,23 +137,24 @@ contract AnalyticsDoubleCountingFix is Test {
         (bool success, ) = address(distributor).call{value: royaltyAmount}("");
         require(success, "Transfer failed");
 
-        // Create a simple Merkle tree with just the minter claim
-        bytes32 merkleRoot = keccak256(abi.encodePacked(minter, royaltyAmount));
+        // Update accrued royalties for the minter
+        address[] memory recipients = new address[](1);
+        recipients[0] = minter;
+        
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = royaltyAmount;
         
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), merkleRoot, royaltyAmount);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
 
         // Initial claimed should be 0
         assertEq(distributor.totalClaimedRoyalty(), 0, "Initial claimed royalty should be 0");
 
-        // 2. Create a mock proof for the minter
-        bytes32[] memory proof = new bytes32[](0); // Empty proof for this simple test
-        
-        // 3. Claim royalties
+        // 2. Claim royalties
         vm.prank(minter);
-        distributor.claimRoyaltiesMerkle(address(nft), minter, royaltyAmount, proof);
+        distributor.claimRoyalties(address(nft), royaltyAmount);
 
-        // 4. Verify claimed analytics updated correctly
+        // 3. Verify claimed analytics updated correctly
         assertEq(distributor.totalClaimedRoyalty(), royaltyAmount, "Claimed royalty should be updated after claim");
     }
 

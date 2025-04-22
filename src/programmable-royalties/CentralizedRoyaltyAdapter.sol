@@ -10,7 +10,7 @@ import "./CentralizedRoyaltyDistributor.sol";
  * @author Custom implementation based on Limit Break, Inc. patterns
  * @notice An adapter that implements IERC2981 and forwards royalty information requests to a centralized distributor.
  *         This makes the collection compatible with OpenSea's single-address royalty model while allowing royalties
- *         to be split between minters and the creator using a Merkle distributor pattern for gas-efficient claims.
+ *         to be split between minters and the creator using direct accrual tracking for efficient royalty distribution.
  */
 abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
     address public royaltyDistributor;
@@ -49,7 +49,7 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
      * @notice Returns the royalty info for a given token ID and sale price.
      * @dev Instead of returning the token-specific payment splitter, it returns the
      *      centralized royalty distributor as the recipient. Marketplaces will send the full
-     *      royalty amount to the distributor which will use a Merkle distribution system for claims.
+     *      royalty amount to the distributor which will track accrued royalties for claims.
      * @param salePrice The sale price
      * @return receiver The royalty distributor address
      * @return royaltyAmount The royalty amount
@@ -92,13 +92,82 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
     }
 
     /**
-     * @notice Returns the minter of the token with id `tokenId`
-     * @param tokenId The id of the token whose minter is being queried
-     * @return The minter of the token with id `tokenId`
+     * @notice Get the minter of a token from the distributor
+     * @param tokenId The token ID to get data for
+     * @return The original minter address
      */
     function minterOf(uint256 tokenId) external view returns (address) {
         CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
         return distributor.getMinter(address(this), tokenId);
+    }
+
+    /**
+     * @notice Get token holder of a token
+     * @param tokenId The token ID to get data for
+     * @return The current holder of the token
+     */
+    function getTokenHolder(uint256 tokenId) external view virtual returns (address) {
+        (,address tokenHolder,,,,) = CentralizedRoyaltyDistributor(payable(royaltyDistributor)).getTokenRoyaltyData(address(this), tokenId);
+        return tokenHolder;
+    }
+
+    /**
+     * @notice Get transaction count for a token
+     * @param tokenId The token ID to get data for
+     * @return Number of recorded transactions
+     */
+    function getTokenTransactionCount(uint256 tokenId) external view virtual returns (uint256) {
+        (,,uint256 count,,,) = CentralizedRoyaltyDistributor(payable(royaltyDistributor)).getTokenRoyaltyData(address(this), tokenId);
+        return count;
+    }
+
+    /**
+     * @notice Get total volume for a token
+     * @param tokenId The token ID to get data for
+     * @return Total trading volume
+     */
+    function getTokenTotalVolume(uint256 tokenId) external view virtual returns (uint256) {
+        (,,,uint256 volume,,) = CentralizedRoyaltyDistributor(payable(royaltyDistributor)).getTokenRoyaltyData(address(this), tokenId);
+        return volume;
+    }
+
+    /**
+     * @notice Get minter royalties earned for a token
+     * @param tokenId The token ID to get data for
+     * @return Total royalties earned by minter
+     */
+    function getMinterRoyaltyEarned(uint256 tokenId) external view virtual returns (uint256) {
+        (,,,,uint256 minterEarned,) = CentralizedRoyaltyDistributor(payable(royaltyDistributor)).getTokenRoyaltyData(address(this), tokenId);
+        return minterEarned;
+    }
+
+    /**
+     * @notice Get creator royalties earned for a token
+     * @param tokenId The token ID to get data for
+     * @return Total royalties earned by creator
+     */
+    function getCreatorRoyaltyEarned(uint256 tokenId) external view virtual returns (uint256) {
+        (,,,,,uint256 creatorEarned) = CentralizedRoyaltyDistributor(payable(royaltyDistributor)).getTokenRoyaltyData(address(this), tokenId);
+        return creatorEarned;
+    }
+
+    /**
+     * @notice Get claimable royalties for a recipient
+     * @param recipient The recipient address to check
+     * @return claimableAmount The amount of royalties available to claim
+     */
+    function getClaimableRoyalties(address recipient) public view returns (uint256 claimableAmount) {
+        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
+        return distributor.getClaimableRoyalties(address(this), recipient);
+    }
+
+    /**
+     * @notice Get total unclaimed royalties for this collection
+     * @return unclaimedAmount Total unclaimed royalties
+     */
+    function totalUnclaimedRoyalties() external view virtual returns (uint256 unclaimedAmount) {
+        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
+        return distributor.collectionUnclaimed(address(this));
     }
 
     /**
@@ -109,48 +178,6 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
         CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
         (uint256 royaltyFeeNum,,,) = distributor.getCollectionConfig(address(this));
         return royaltyFeeNum;
-    }
-
-    /**
-     * @notice Get the active Merkle root for this collection
-     * @return The active Merkle root
-     */
-    function activeMerkleRoot() public view returns (bytes32) {
-        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
-        return distributor.getActiveMerkleRoot(address(this));
-    }
-
-    /**
-     * @notice Get royalty data for a token
-     * @param tokenId The token ID
-     * @return minter The token minter
-     * @return currentOwner The current owner
-     * @return transactionCount Number of transactions
-     * @return totalVolume Total sales volume
-     * @return minterRoyaltyEarned Total royalties earned by the minter
-     * @return creatorRoyaltyEarned Total royalties earned by the creator
-     */
-    function tokenRoyaltyData(uint256 tokenId) external view returns (
-        address minter,
-        address currentOwner,
-        uint256 transactionCount,
-        uint256 totalVolume,
-        uint256 minterRoyaltyEarned,
-        uint256 creatorRoyaltyEarned
-    ) {
-        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
-        return distributor.getTokenRoyaltyData(address(this), tokenId);
-    }
-
-    /**
-     * @notice Get the total royalties earned for a specific token
-     * @param tokenId The token ID
-     * @return totalRoyalties Total royalties earned for this token
-     */
-    function getTotalTokenRoyalties(uint256 tokenId) external view returns (uint256 totalRoyalties) {
-        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
-        (,,,, uint256 minterShare, uint256 creatorShare) = distributor.getTokenRoyaltyData(address(this), tokenId);
-        return minterShare + creatorShare;
     }
 
     /**

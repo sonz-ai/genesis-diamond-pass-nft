@@ -15,8 +15,8 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol"; // Added fo
  * @author Custom implementation based on Limit Break, Inc. patterns
  * @notice A centralized royalty distributor that works with OpenSea's single address royalty model
  *         while maintaining the functionality to distribute royalties to minters and creators based on accumulated funds.
- * @dev This version uses a Merkle distributor pattern for efficient, gas-optimized claims. An off-chain service tracks 
- *      royalty attributions and periodically submits Merkle roots containing claimable amounts per recipient.
+ * @dev This version uses direct accrual tracking for efficient royalty distribution. An off-chain service tracks 
+ *      royalty attributions and updates accrued royalties for recipients, who can claim at any time.
  */
 contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl {
     using SafeERC20 for IERC20;
@@ -37,16 +37,13 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     error RoyaltyDistributor__CallerIsNotCollectionOwner(); // Specific error for collection-callable functions
     error RoyaltyDistributor__SharesDoNotSumToDenominator(); // Ensure shares add up correctly
     error RoyaltyDistributor__CallerIsNotAdminOrServiceAccount(); // New error
-    error RoyaltyDistributor__NoActiveMerkleRoot(); // New error for Merkle claims
-    error RoyaltyDistributor__AlreadyClaimed(); // New error for Merkle claims
-    error RoyaltyDistributor__InvalidProof(); // New error for Merkle claims
-    error RoyaltyDistributor__InsufficientBalanceForRoot(); // New error for Merkle root submission
     error RoyaltyDistributor__OracleUpdateTooFrequent(); // New error for oracle rate limiting
     error RoyaltyDistributor__TransactionAlreadyProcessed(); // New error for batch update
     error RoyaltyDistributor__NotCollectionCreatorOrAdmin(); // New error for creator update
     error RoyaltyDistributor__BidNotFound(); // New error for bid marketplace
     error RoyaltyDistributor__InvalidBidAmount(); // New error for bid marketplace
     error RoyaltyDistributor__TransferFailed(); // New error for failed transfers
+    error RoyaltyDistributor__InsufficientUnclaimedRoyalties(); // New error for insufficient unclaimed royalties
 
     struct CollectionConfig {
         uint256 royaltyFeeNumerator;
@@ -111,11 +108,13 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     // Accumulated royalties (in ERC20 tokens) for each collection and token
     mapping(address => mapping(IERC20 => uint256)) private _collectionERC20Royalties;
 
-    // NEW: Mappings for Merkle distributor pattern
-    mapping(address => bytes32) private _activeMerkleRoots; // collection => root
-    mapping(bytes32 => mapping(address => bool)) private _hasClaimedMerkle; // root => recipient => claimed status
-    mapping(bytes32 => uint256) private _merkleRootTotalAmount; // root => totalAmount
-    mapping(bytes32 => uint256) private _merkleRootSubmissionTime; // root => timestamp
+    // NEW: Direct accrual and claim tracking
+    mapping(address => mapping(address => uint256)) private _totalAccruedRoyalties; // collection => recipient => total accrued
+    mapping(address => mapping(address => uint256)) private _totalClaimedRoyalties; // collection => recipient => total claimed
+
+    // NEW: ERC20 accrual and claim tracking
+    mapping(address => mapping(IERC20 => mapping(address => uint256))) private _totalAccruedERC20Royalties; // collection => token => recipient => total accrued
+    mapping(address => mapping(IERC20 => mapping(address => uint256))) private _totalClaimedERC20Royalties; // collection => token => recipient => total claimed
 
     // NEW: Mappings for royalty data tracking
     mapping(address => mapping(uint256 => TokenRoyaltyData)) private _tokenRoyaltyData; // collection => tokenId => data
@@ -128,9 +127,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     // NEW: Global analytics state variables tracking
     uint256 public totalAccruedRoyalty;
     uint256 public totalClaimedRoyalty;
-
-    // NEW: Mapping to track ERC20 claim status per merkle root
-    mapping(bytes32 => mapping(address => mapping(address => bool))) private _hasClaimedERC20Merkle; // root => recipient => token => claimed
 
     // BID MARKETPLACE MAPPINGS
     // Tracks bids for specific tokenIds
@@ -148,10 +144,11 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     event RoyaltyReceived(address indexed collection, address indexed sender, uint256 amount); // Added collection context
     event ERC20RoyaltyReceived(address indexed collection, address indexed token, address indexed sender, uint256 amount); // Added collection context
     
-    // NEW: Events for Merkle distribution
-    event MerkleRootSubmitted(address indexed collection, bytes32 indexed merkleRoot, uint256 totalAmountInTree, uint256 timestamp);
-    event MerkleRoyaltyClaimed(address indexed recipient, uint256 amount, bytes32 indexed merkleRoot, address indexed collection);
-    event ERC20MerkleRoyaltyClaimed(address indexed recipient, address indexed token, uint256 amount, bytes32 indexed merkleRoot, address collection);
+    // NEW: Events for direct accrual and claiming
+    event RoyaltyAccrued(address indexed collection, address indexed recipient, uint256 amount);
+    event RoyaltyClaimed(address indexed collection, address indexed recipient, uint256 amount);
+    event ERC20RoyaltyAccrued(address indexed collection, address indexed token, address indexed recipient, uint256 amount);
+    event ERC20RoyaltyClaimed(address indexed collection, address indexed token, address indexed recipient, uint256 amount);
     
     // NEW: Event for detailed royalty attribution
     event RoyaltyAttributed(
@@ -511,87 +508,219 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     }
 
     /**
-     * @notice Submit a Merkle root for royalty claims
-     * @dev Only callable by SERVICE_ACCOUNT_ROLE
+     * @notice Updates accrued royalties for multiple recipients
+     * @dev Restricted to SERVICE_ACCOUNT_ROLE or DEFAULT_ADMIN_ROLE
      * @param collection The collection address
-     * @param merkleRoot The Merkle root of all claimable (address, amount) pairs
-     * @param totalAmountInTree The total ETH amount included in the Merkle tree
+     * @param recipients Array of recipient addresses
+     * @param amounts Array of royalty amounts to accrue
      */
-    function submitRoyaltyMerkleRoot(
-        address  collection, 
-        bytes32  merkleRoot, 
-        uint256  totalAmountInTree
-    ) external onlyRole(SERVICE_ACCOUNT_ROLE) {
+    function updateAccruedRoyalties(
+        address collection,
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) external {
+        // Check caller has permission
+        if (!hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
+            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
+        }
+
         // Check collection is registered
         if (!_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
 
-        // **FIX** require pool already funded – do NOT pull from global balance
-        if (_collectionRoyalties[collection] < totalAmountInTree) {
-            revert RoyaltyDistributor__InsufficientBalanceForRoot();
-        }
+        // Validate arrays have the same length
+        require(recipients.length == amounts.length, "Arrays must have the same length");
 
-        _activeMerkleRoots[collection]     = merkleRoot;
-        _merkleRootTotalAmount[merkleRoot] = totalAmountInTree;
-        _merkleRootSubmissionTime[merkleRoot] = block.timestamp;
-
-        emit MerkleRootSubmitted(collection, merkleRoot, totalAmountInTree, block.timestamp);
+        // Call internal logic
+        _updateAccruedRoyaltiesInternal(collection, recipients, amounts);
     }
 
     /**
-     * @notice Claim royalties using Merkle proof
-     * @dev Verifies the proof and transfers the claimed amount to the recipient
-     * @param collection The collection address
-     * @param recipient The address receiving the royalties
-     * @param amount The amount to claim
-     * @param merkleProof The Merkle proof to verify the claim
+     * @notice Internal function to update accrued royalties
+     * @dev Separated logic for potential internal reuse and cleaner external functions
      */
-    function claimRoyaltiesMerkle(
+    function _updateAccruedRoyaltiesInternal(
         address collection,
-        address recipient,
-        uint256 amount,
-        bytes32[] calldata merkleProof
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) internal {
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address recipient = recipients[i];
+            uint256 amount = amounts[i];
+            
+            if (amount == 0) continue;
+            
+            _totalAccruedRoyalties[collection][recipient] += amount;
+            
+            // Update global analytics
+            totalAccruedRoyalty += amount;
+            
+            emit RoyaltyAccrued(collection, recipient, amount);
+        }
+    }
+
+    /**
+     * @notice Updates accrued ERC20 royalties for multiple recipients
+     * @dev Restricted to SERVICE_ACCOUNT_ROLE or DEFAULT_ADMIN_ROLE
+     * @param collection The collection address
+     * @param token The ERC20 token address
+     * @param recipients Array of recipient addresses
+     * @param amounts Array of royalty amounts to accrue
+     */
+    function updateAccruedERC20Royalties(
+        address collection,
+        IERC20 token,
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) external {
+        // Check caller has permission
+        if (!hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) && !hasRole(SERVICE_ACCOUNT_ROLE, _msgSender())) {
+            revert RoyaltyDistributor__CallerIsNotAdminOrServiceAccount();
+        }
+
+        // Check collection is registered
+        if (!_collectionConfigs[collection].registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+
+        // Validate arrays have the same length
+        require(recipients.length == amounts.length, "Arrays must have the same length");
+
+        // Call internal logic
+        _updateAccruedERC20RoyaltiesInternal(collection, token, recipients, amounts);
+    }
+
+    /**
+     * @notice Internal function to update accrued ERC20 royalties
+     * @dev Separated logic for potential internal reuse
+     */
+    function _updateAccruedERC20RoyaltiesInternal(
+        address collection,
+        IERC20 token,
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) internal {
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address recipient = recipients[i];
+            uint256 amount = amounts[i];
+            
+            if (amount == 0) continue;
+            
+            _totalAccruedERC20Royalties[collection][token][recipient] += amount;
+            
+            emit ERC20RoyaltyAccrued(collection, address(token), recipient, amount);
+        }
+    }
+
+    /**
+     * @notice Claim accrued royalties
+     * @dev Verifies the caller has sufficient unclaimed royalties and transfers the amount
+     * @param collection The collection address
+     * @param amount The amount to claim
+     */
+    function claimRoyalties(
+        address collection,
+        uint256 amount
     ) external nonReentrant {
-        // Get active Merkle root for collection
-        bytes32 activeRoot = _activeMerkleRoots[collection];
+        address recipient = msg.sender;
         
-        // Check root exists
-        if (activeRoot == bytes32(0)) {
-            revert RoyaltyDistributor__NoActiveMerkleRoot();
+        // Check that recipient has sufficient unclaimed royalties
+        uint256 accrued = _totalAccruedRoyalties[collection][recipient];
+        uint256 claimed = _totalClaimedRoyalties[collection][recipient];
+        
+        if (accrued - claimed < amount) {
+            revert RoyaltyDistributor__InsufficientUnclaimedRoyalties();
         }
         
-        // Check has not already claimed
-        if (_hasClaimedMerkle[activeRoot][recipient]) {
-            revert RoyaltyDistributor__AlreadyClaimed();
-        }
-        
-        // Verify proof
-        bytes32 leaf = keccak256(abi.encodePacked(recipient, amount));
-        bool validProof = MerkleProof.verify(merkleProof, activeRoot, leaf);
-        
-        if (!validProof) {
-            revert RoyaltyDistributor__InvalidProof();
-        }
-        
-        // Mark as claimed
-        _hasClaimedMerkle[activeRoot][recipient] = true;
-        
-        // Ensure royalty pool has enough funds
+        // Check that the collection has enough funds
         if (_collectionRoyalties[collection] < amount) {
             revert RoyaltyDistributor__NotEnoughEtherToDistributeForCollection();
         }
         
-        // Reduce collection royalties
+        // Update claimed amount and reduce collection balance
+        _totalClaimedRoyalties[collection][recipient] += amount;
         _collectionRoyalties[collection] -= amount;
         
-        // Transfer amount to recipient
-        payable(recipient).sendValue(amount);
-        
-        // --- On‑chain analytics update ---
+        // Update global analytics
         totalClaimedRoyalty += amount;
         
-        emit MerkleRoyaltyClaimed(recipient, amount, activeRoot, collection);
+        // Transfer ETH to recipient
+        (bool success, ) = payable(recipient).call{value: amount}("");
+        if (!success) {
+            revert RoyaltyDistributor__TransferFailed();
+        }
+        
+        emit RoyaltyClaimed(collection, recipient, amount);
+    }
+
+    /**
+     * @notice Claim accrued ERC20 royalties
+     * @dev Verifies the caller has sufficient unclaimed royalties and transfers the tokens
+     * @param collection The collection address
+     * @param token The ERC20 token address
+     * @param amount The amount to claim
+     */
+    function claimERC20Royalties(
+        address collection,
+        IERC20 token,
+        uint256 amount
+    ) external nonReentrant {
+        address recipient = msg.sender;
+        
+        // Check that recipient has sufficient unclaimed royalties
+        uint256 accrued = _totalAccruedERC20Royalties[collection][token][recipient];
+        uint256 claimed = _totalClaimedERC20Royalties[collection][token][recipient];
+        
+        if (accrued - claimed < amount) {
+            revert RoyaltyDistributor__InsufficientUnclaimedRoyalties();
+        }
+        
+        // Check that the collection has enough tokens
+        if (_collectionERC20Royalties[collection][token] < amount) {
+            revert RoyaltyDistributor__NotEnoughTokensToDistributeForCollection();
+        }
+        
+        // Update claimed amount and reduce collection balance
+        _totalClaimedERC20Royalties[collection][token][recipient] += amount;
+        _collectionERC20Royalties[collection][token] -= amount;
+        
+        // Transfer tokens to recipient
+        token.safeTransfer(recipient, amount);
+        
+        emit ERC20RoyaltyClaimed(collection, address(token), recipient, amount);
+    }
+
+    /**
+     * @notice Get the claimable royalties for a recipient
+     * @param collection The collection address
+     * @param recipient The recipient address
+     * @return The amount of royalties available to claim
+     */
+    function getClaimableRoyalties(
+        address collection,
+        address recipient
+    ) external view returns (uint256) {
+        uint256 accrued = _totalAccruedRoyalties[collection][recipient];
+        uint256 claimed = _totalClaimedRoyalties[collection][recipient];
+        return accrued - claimed;
+    }
+
+    /**
+     * @notice Get the claimable ERC20 royalties for a recipient
+     * @param collection The collection address
+     * @param token The ERC20 token address
+     * @param recipient The recipient address
+     * @return The amount of ERC20 royalties available to claim
+     */
+    function getClaimableERC20Royalties(
+        address collection,
+        IERC20 token,
+        address recipient
+    ) external view returns (uint256) {
+        uint256 accrued = _totalAccruedERC20Royalties[collection][token][recipient];
+        uint256 claimed = _totalClaimedERC20Royalties[collection][token][recipient];
+        return accrued - claimed;
     }
 
     /**
@@ -630,172 +759,41 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     
     /**
      * @notice Chainlink callback function for oracle royalty data updates
-     * @dev Would be called by the Chainlink node after processing updateRoyaltyDataViaOracle
+     * @dev Would be called by the Chainlink node after processing updateRoyaltyDataViaOracle.
+     *      This function now expects processed data (recipients and amounts) and calls updateAccruedRoyalties.
+     *      It should be restricted to the Chainlink oracle node in a production environment.
      * @param _requestId The Chainlink request ID
      * @param collection The collection address
-     * @param tokenIds Array of token IDs involved in sales
-     * @param minters Array of minter addresses for each token
-     * @param salePrices Array of sale prices for each transaction
-     * @param transactionTimestamps Array of timestamps for each transaction
-     * @param transactionHashes Array of transaction hashes for each sale
+     * @param recipients Array of recipient addresses who earned royalties
+     * @param amounts Array of royalty amounts earned by each recipient
+     * // Removed parameters related to raw sale data (tokenIds, minters, salePrices, etc.)
+     * // as the oracle/off-chain service is expected to pre-process this into recipient/amount pairs.
      */
     function fulfillRoyaltyData(
-        bytes32 _requestId,
+        bytes32 _requestId, // Keep requestId for potential Chainlink integration patterns
         address collection,
-        uint256[] calldata tokenIds,
-        address[] calldata minters,
-        uint256[] calldata salePrices,
-        uint256[] calldata transactionTimestamps,
-        bytes32[] calldata transactionHashes
+        address[] calldata recipients,
+        uint256[] calldata amounts
+        // bytes32[] calldata transactionHashes // Optionally keep for logging/deduplication if needed
     ) external /* recordChainlinkFulfillment(_requestId) */ {
-        // This function would need to be restricted to the Chainlink oracle node
-        // For now we'll implement the same logic as batchUpdateRoyaltyData
+        // TODO: Implement proper access control - only allow trusted Oracle node
+        // require(msg.sender == trustedOracleNode, "Caller is not the trusted oracle");
 
         // Check collection is registered
-        CollectionConfig storage config = _collectionConfigs[collection];
-        if (!config.registered) {
+        if (!_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
 
-        // Validate arrays have the same length
-        uint256 length = tokenIds.length;
-        require(
-            minters.length == length &&
-                salePrices.length == length &&
-                transactionTimestamps.length == length &&
-                transactionHashes.length == length,
-            "Array lengths must match"
-        );
+        // Validate arrays have the same length (already done in updateAccruedRoyalties, but good practice here too)
+        require(recipients.length == amounts.length, "Arrays must have the same length");
 
-        // Process each sale
-        for (uint256 i = 0; i < length; i++) {
-            uint256 tokenId = tokenIds[i];
-            uint256 salePrice = salePrices[i];
-            bytes32 txHash = transactionHashes[i];
-            
-            // Get token royalty data
-            TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
-            
-            // Skip if transaction already processed
-            if (tokenData.processedTransactions[txHash]) {
-                continue;
-            }
-            
-            // Calculate royalty amount based on collection config
-            uint256 royaltyAmount = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
-            uint256 minterShareRoyalty = (royaltyAmount * config.minterShares) / SHARES_DENOMINATOR;
-            uint256 creatorShareRoyalty = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
+        // Directly call updateAccruedRoyalties with the processed data from the oracle
+        // We assume the amounts provided are for ETH royalties. A more complex implementation
+        // might need to handle ERC20s based on additional parameters.
+        _updateAccruedRoyaltiesInternal(collection, recipients, amounts);
 
-            // Update token data
-            tokenData.transactionCount += 1;
-            tokenData.totalVolume += salePrice;
-            tokenData.minterRoyaltyEarned += minterShareRoyalty;
-            tokenData.creatorRoyaltyEarned += creatorShareRoyalty;
-            tokenData.lastSyncedBlock = block.number;
-            tokenData.processedTransactions[txHash] = true;
-            
-            // Update collection data
-            CollectionRoyaltyData storage colData = _collectionRoyaltyData[collection];
-            colData.totalVolume += salePrice;
-            colData.lastSyncedBlock = block.number;
-
-            // Update global analytics
-            totalAccruedRoyalty += royaltyAmount;
-
-            // Emit detailed attribution event
-            emit RoyaltyAttributed(
-                collection,
-                tokenId,
-                minters[i],
-                salePrice,
-                minterShareRoyalty,
-                creatorShareRoyalty,
-                txHash
-            );
-        }
-    }
-
-    /**
-     * @notice Get the active Merkle root for a collection
-     * @param collection The collection address
-     */
-    function getActiveMerkleRoot(address collection) external view returns (bytes32) {
-        return _activeMerkleRoots[collection];
-    }
-
-    /**
-     * @notice Check if a recipient has already claimed for a specific Merkle root
-     * @param merkleRoot The Merkle root to check against
-     * @param recipient The recipient address
-     */
-    function hasClaimedMerkle(bytes32 merkleRoot, address recipient) external view returns (bool) {
-        return _hasClaimedMerkle[merkleRoot][recipient];
-    }
-
-    /**
-     * @notice Get information about a Merkle root
-     * @param merkleRoot The Merkle root
-     * @return totalAmount The total amount included in the root
-     * @return submissionTime The timestamp when the root was submitted
-     */
-    function getMerkleRootInfo(bytes32 merkleRoot) external view returns (
-        uint256 totalAmount,
-        uint256 submissionTime
-    ) {
-        return (
-            _merkleRootTotalAmount[merkleRoot],
-            _merkleRootSubmissionTime[merkleRoot]
-        );
-    }
-
-    /**
-     * @notice Get royalty data for a specific token
-     * @param collection The collection address
-     * @param tokenId The token ID
-     * @return minter The token minter
-     * @return tokenHolder The current holder of the token
-     * @return transactionCount Number of transactions
-     * @return totalVolume Total sales volume
-     * @return minterRoyaltyEarned Total royalties earned by the minter
-     * @return creatorRoyaltyEarned Total royalties earned by the creator
-     */
-    function getTokenRoyaltyData(address collection, uint256 tokenId) external view returns (
-        address minter,
-        address tokenHolder,
-        uint256 transactionCount,
-        uint256 totalVolume,
-        uint256 minterRoyaltyEarned,
-        uint256 creatorRoyaltyEarned
-    ) {
-        TokenRoyaltyData storage data = _tokenRoyaltyData[collection][tokenId];
-        return (
-            data.minter,
-            data.tokenHolder,
-            data.transactionCount,
-            data.totalVolume,
-            data.minterRoyaltyEarned,
-            data.creatorRoyaltyEarned
-        );
-    }
-
-    /**
-     * @notice Get royalty data for a collection
-     * @param collection The collection address
-     * @return totalVolume Total sales volume
-     * @return lastSyncedBlock Last block number when data was synced
-     * @return totalRoyaltyCollected Total royalties collected
-     */
-    function getCollectionRoyaltyData(address collection) external view returns (
-        uint256 totalVolume,
-        uint256 lastSyncedBlock,
-        uint256 totalRoyaltyCollected
-    ) {
-        CollectionRoyaltyData storage data = _collectionRoyaltyData[collection];
-        return (
-            data.totalVolume,
-            data.lastSyncedBlock,
-            data.totalRoyaltyCollected
-        );
+        // Optional: Could emit an event here indicating Oracle fulfillment
+        // emit OracleRoyaltyDataFulfilled(collection, _requestId);
     }
 
     /**
@@ -866,60 +864,6 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     }
 
     /**
-     * @notice Claim ERC20 royalties using Merkle proof
-     * @dev Similar to claimRoyaltiesMerkle but for ERC20 tokens
-     * @param collection The collection address
-     * @param recipient The address receiving the royalties
-     * @param token The ERC20 token address
-     * @param amount The amount to claim
-     * @param merkleProof The Merkle proof
-     */
-    function claimERC20RoyaltiesMerkle(
-        address collection,
-        address recipient,
-        IERC20 token,
-        uint256 amount,
-        bytes32[] calldata merkleProof
-    ) external nonReentrant {
-        // Get active root for collection (shared across ETH & ERC20).
-        bytes32 activeRoot = _activeMerkleRoots[collection];
-
-        if (activeRoot == bytes32(0)) {
-            revert RoyaltyDistributor__NoActiveMerkleRoot();
-        }
-
-        if (_hasClaimedERC20Merkle[activeRoot][recipient][address(token)]) {
-            revert RoyaltyDistributor__AlreadyClaimed();
-        }
-
-        // Leaf includes token to avoid collision between different tokens
-        bytes32 leaf = keccak256(abi.encodePacked(recipient, address(token), amount));
-        bool validProof = MerkleProof.verify(merkleProof, activeRoot, leaf);
-
-        if (!validProof) {
-            revert RoyaltyDistributor__InvalidProof();
-        }
-
-        // Mark as claimed
-        _hasClaimedERC20Merkle[activeRoot][recipient][address(token)] = true;
-
-        // Ensure royalty pool has enough tokens
-        if (_collectionERC20Royalties[collection][token] < amount) {
-            revert RoyaltyDistributor__NotEnoughTokensToDistributeForCollection();
-        }
-
-        // Reduce pool
-        _collectionERC20Royalties[collection][token] -= amount;
-
-        // Transfer tokens to recipient
-        token.safeTransfer(recipient, amount);
-
-        // No ETH analytics increment since token claim
-
-        emit ERC20MerkleRoyaltyClaimed(recipient, address(token), amount, activeRoot, collection);
-    }
-
-    /**
      * @notice Update the creator address for a collection
      * @dev Only callable by the current creator or an admin
      * @param collection The collection address
@@ -977,157 +921,122 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         return _collectionRoyalties[collection];
     }
 
-    // BID MARKETPLACE IMPLEMENTATION
+    /**
+     * @notice Returns token minter and holder
+     * @param collection The collection address
+     * @param tokenId The token ID
+     * @return minter The original minter of the token
+     * @return tokenHolder The current holder of the token
+     */
+    function getTokenMinterAndHolder(
+        address collection,
+        uint256 tokenId
+    ) external view returns (
+        address minter,
+        address tokenHolder
+    ) {
+        TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
+        return (
+            tokenData.minter,
+            tokenData.tokenHolder
+        );
+    }
 
     /**
-     * @notice Place a bid for minter status of a token
-     * @param tokenId The token ID to bid on (0 for collection-wide bid)
-     * @param isCollectionBid Whether this is a collection-wide bid
-     */
-    function placeBid(uint256 tokenId, bool isCollectionBid) external payable nonReentrant {
-        // For token-specific bids, we need a tokenId
-        if (!isCollectionBid && tokenId == 0) {
-            revert RoyaltyDistributor__InvalidBidAmount();
-        }
-        
-        // Ensure non-zero bid
-        if (msg.value == 0) {
-            revert RoyaltyDistributor__ZeroAmountToDistribute();
-        }
-        
-        // For the test, we'll pass in address(1) as the collection
-        address collection = address(1);
-        
-        // Place the bid
-        if (isCollectionBid) {
-            // Add to collection bids
-            _collectionBids[collection].push(Bid({
-                bidder: msg.sender,
-                amount: msg.value,
-                timestamp: block.timestamp
-            }));
-        } else {
-            // Add to token-specific bids
-            _tokenBids[collection][tokenId].push(Bid({
-                bidder: msg.sender,
-                amount: msg.value,
-                timestamp: block.timestamp
-            }));
-        }
-        
-        emit BidPlaced(collection, tokenId, msg.sender, msg.value, isCollectionBid);
-    }
-    
-    /**
-     * @notice Accept the highest bid for minter status of a token
+     * @notice Returns token transaction data
+     * @param collection The collection address
      * @param tokenId The token ID
+     * @return transactionCount Number of recorded transactions
+     * @return totalVolume Total trading volume
      */
-    function acceptHighestBid(uint256 tokenId) external nonReentrant {
-        // For the test, we'll use a hardcoded collection address
-        address collection = address(1);
-        
-        // Find highest bid (check both token-specific and collection-wide bids)
-        Bid memory highestBid;
-        uint256 highestBidIndex = type(uint256).max;
-        bool isTokenBid = true;
-        
-        // Check token-specific bids
-        Bid[] storage tokenBids = _tokenBids[collection][tokenId];
-        for (uint i = 0; i < tokenBids.length; i++) {
-            if (tokenBids[i].amount > highestBid.amount) {
-                highestBid = tokenBids[i];
-                highestBidIndex = i;
-                isTokenBid = true;
-            }
-        }
-        
-        // Check collection-wide bids
-        Bid[] storage collectionBids = _collectionBids[collection];
-        for (uint i = 0; i < collectionBids.length; i++) {
-            if (collectionBids[i].amount > highestBid.amount) {
-                highestBid = collectionBids[i];
-                highestBidIndex = i;
-                isTokenBid = false;
-            }
-        }
-        
-        // Ensure there is a bid to accept
-        if (highestBidIndex == type(uint256).max) {
-            revert RoyaltyDistributor__BidNotFound();
-        }
-        
-        // Update minter
-        TokenMinter storage tokenMinter = _minters[collection][tokenId];
-        address oldMinter = tokenMinter.minter;
-        tokenMinter.minter = highestBid.bidder;
-        // If not already assigned (first-time minter), mark as assigned
-        tokenMinter.assigned = true;
-        
-        // Remove the accepted bid
-        if (isTokenBid) {
-            // Remove from token bids
-            if (highestBidIndex < tokenBids.length - 1) {
-                tokenBids[highestBidIndex] = tokenBids[tokenBids.length - 1];
-            }
-            tokenBids.pop();
-        } else {
-            // Remove from collection bids
-            if (highestBidIndex < collectionBids.length - 1) {
-                collectionBids[highestBidIndex] = collectionBids[collectionBids.length - 1];
-            }
-            collectionBids.pop();
-        }
-        
-        // Send payment to seller (100% to the seller in this implementation)
-        (bool success, ) = payable(msg.sender).call{value: highestBid.amount}("");
-        if (!success) {
-            revert RoyaltyDistributor__TransferFailed();
-        }
-        
-        emit BidAccepted(collection, tokenId, oldMinter, highestBid.bidder, highestBid.amount);
+    function getTokenTransactionData(
+        address collection,
+        uint256 tokenId
+    ) external view returns (
+        uint256 transactionCount,
+        uint256 totalVolume
+    ) {
+        TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
+        return (
+            tokenData.transactionCount,
+            tokenData.totalVolume
+        );
     }
-    
+
     /**
-     * @notice Withdraw a bid for minter status
+     * @notice Returns token royalty earnings
+     * @param collection The collection address
      * @param tokenId The token ID
-     * @param isCollectionBid Whether this is a collection-wide bid
+     * @return minterRoyaltyEarned Total royalties earned by minter
+     * @return creatorRoyaltyEarned Total royalties earned by creator for this token
      */
-    function withdrawBid(uint256 tokenId, bool isCollectionBid) external nonReentrant {
-        // For the test, we'll use a hardcoded collection address
-        address collection = address(1);
-        
-        // Get the appropriate bids array
-        Bid[] storage bids = isCollectionBid ? _collectionBids[collection] : _tokenBids[collection][tokenId];
-        
-        // Find the bid
-        uint256 bidIndex = type(uint256).max;
-        uint256 bidAmount = 0;
-        
-        for (uint i = 0; i < bids.length; i++) {
-            if (bids[i].bidder == msg.sender) {
-                bidIndex = i;
-                bidAmount = bids[i].amount;
-                break;
-            }
-        }
-        
-        if (bidIndex == type(uint256).max) {
-            revert RoyaltyDistributor__BidNotFound();
-        }
-        
-        // Remove bid by swapping with the last element and popping
-        if (bidIndex != bids.length - 1) {
-            bids[bidIndex] = bids[bids.length - 1];
-        }
-        bids.pop();
-        
-        // Return funds to bidder
-        (bool success, ) = msg.sender.call{value: bidAmount}("");
-        if (!success) {
-            revert RoyaltyDistributor__TransferFailed();
-        }
-        
-        emit BidWithdrawn(collection, tokenId, msg.sender, bidAmount, isCollectionBid);
+    function getTokenRoyaltyEarnings(
+        address collection,
+        uint256 tokenId
+    ) external view returns (
+        uint256 minterRoyaltyEarned,
+        uint256 creatorRoyaltyEarned
+    ) {
+        TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
+        return (
+            tokenData.minterRoyaltyEarned,
+            tokenData.creatorRoyaltyEarned
+        );
+    }
+
+    /**
+     * @notice Returns collection royalty data for analytics
+     * @param collection The collection address
+     * @return totalVolume Total volume across all tokens
+     * @return lastSyncedBlock Latest sync block for the collection
+     * @return totalRoyaltyCollected Total royalties received
+     */
+    function getCollectionRoyaltyData(
+        address collection
+    ) external view returns (
+        uint256 totalVolume,
+        uint256 lastSyncedBlock,
+        uint256 totalRoyaltyCollected
+    ) {
+        CollectionRoyaltyData storage colData = _collectionRoyaltyData[collection];
+        return (
+            colData.totalVolume,
+            colData.lastSyncedBlock,
+            colData.totalRoyaltyCollected
+        );
+    }
+
+    /**
+     * @notice Returns token royalty data for analytics
+     * @param collection The collection address
+     * @param tokenId The token ID
+     * @return minter The original minter address
+     * @return tokenHolder The current holder of the token
+     * @return transactionCount Number of recorded transactions
+     * @return totalVolume Total trading volume
+     * @return minterRoyaltyEarned Total royalties earned by minter
+     * @return creatorRoyaltyEarned Total royalties earned by creator for this token
+     */
+    function getTokenRoyaltyData(
+        address collection,
+        uint256 tokenId
+    ) external view returns (
+        address minter,
+        address tokenHolder,
+        uint256 transactionCount,
+        uint256 totalVolume,
+        uint256 minterRoyaltyEarned,
+        uint256 creatorRoyaltyEarned
+    ) {
+        TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
+        return (
+            tokenData.minter,
+            tokenData.tokenHolder,
+            tokenData.transactionCount,
+            tokenData.totalVolume,
+            tokenData.minterRoyaltyEarned,
+            tokenData.creatorRoyaltyEarned
+        );
     }
 
     /**

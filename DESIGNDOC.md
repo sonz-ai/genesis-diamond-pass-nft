@@ -18,7 +18,7 @@ Primary mint payments need to be directed **solely to the creator/royalty recipi
 
 Additionally, after deployment, primary ownership needs to be transferred to a secure entity (like a multisig), while allowing a separate, less privileged service account to perform routine operational tasks. The royalty recipient (creator) address may also need to be transferred to a different entity (e.g., a company multisig) after deployment.
 
-**3. Implemented Solution: Centralized Distributor Pattern with Merkle Claims**
+**3. Implemented Solution: Centralized Distributor Pattern with Direct Accrual Tracking**
 
 Our solution uses a three-contract system with refined access control and clearly separated roles:
 
@@ -49,15 +49,15 @@ Our solution uses a three-contract system with refined access control and clearl
     *   The single address designated to receive all royalty payments from marketplaces for registered collections.
     *   Uses **OpenZeppelin's `AccessControl`** for role management:
         *   `DEFAULT_ADMIN_ROLE`: Controls core functions like registering new collections and setting oracle parameters.
-        *   `SERVICE_ACCOUNT_ROLE`: Can perform specific actions like submitting royalty data (`batchUpdateRoyaltyData`) and submitting Merkle roots (`submitRoyaltyMerkleRoot`).
+        *   `SERVICE_ACCOUNT_ROLE`: Can perform specific actions like updating accrued royalties (`updateAccruedRoyalties`).
     *   **Key Responsibilities:**
         *   Stores configuration per collection (royalty fee, minter/creator shares, creator address).
         *   Allows updating the creator address that receives royalties via `updateCreatorAddress`.
         *   Tracks the original minter for every `tokenId` within each registered collection.
         *   Accumulates received royalty funds (ETH and potentially ERC20) per collection **only from marketplace payments via its `receive()` function**.
-        *   Provides functions (`claimRoyaltiesMerkle`) for minters and creators to withdraw their respective shares based on submitted Merkle proofs.
-        *   Allows admins or service accounts to record processed sale details (`batchUpdateRoyaltyData`) to update internal royalty accounting.
-        *   Allows service accounts to submit Merkle roots (`submitRoyaltyMerkleRoot`) representing claimable royalties.
+        *   Tracks total accrued and claimed royalties per recipient for each collection.
+        *   Provides functions (`claimRoyalties`) for minters and creators to withdraw their respective accumulated shares.
+        *   Allows service accounts to update accrued royalties (`updateAccruedRoyalties`) to reflect new sales and royalty distributions.
 
 **4. System Flow**
 
@@ -75,7 +75,7 @@ Our solution uses a three-contract system with refined access control and clearl
 2.  **Minting:**
     *   A user calls `whitelistMint` or `mint` on `DiamondGenesisPass`.
     *   The `DiamondGenesisPass` contract **transfers the payment (`msg.value`) directly to the current creator/royalty recipient address** (e.g., using `payable(creator()).transfer(msg.value)` or a safe equivalent).
-    *   The `_mint` function within `DiamondGenesisPass` calls `centralizedDistributor.setTokenMinter(address(this), tokenId, to)` to record the minter. **Requires `setTokenMinter` to check `msg.sender == collection`**.
+    *   The `_mint` function within `DiamondGenesisPass` calls `centralizedDistributor.setTokenMinter(address(this), tokenId, to)` to record the minter. **Requires `setTokenMinter` to check `_msgSender()_ == collection`**.
 
 3.  **Secondary Sale & Royalty Payment:**
     *   A user sells a `DiamondGenesisPass` NFT (e.g., Token ID 123) on a marketplace (e.g., OpenSea).
@@ -87,32 +87,31 @@ Our solution uses a three-contract system with refined access control and clearl
     *   The `CentralizedRoyaltyDistributor` receives ETH via its `receive()` function from direct marketplace royalty payments.
     *   The contract internally increments the balance tracked for the `DiamondGenesisPass` collection address (`_collectionRoyalties[address(DiamondGenesisPass)] += msg.value`). **Note: `msg.value` is used here as `receive()` gets it directly.**
 
-5.  **Royalty Data Processing & Merkle Root Submission:**
-    *   **Off-Chain Processing:** An off-chain service monitors `Transfer` events, fetches sale prices from marketplaces, calculates royalty shares (minter/creator) based on the `_collectionConfigs`, and aggregates total unpaid royalties for each minter and the creator for a specific period.
-    *   **Batch Update:** The service account calls `batchUpdateRoyaltyData` on `CentralizedRoyaltyDistributor`, providing details for multiple sales. This function (restricted to `SERVICE_ACCOUNT_ROLE` or `DEFAULT_ADMIN_ROLE`) updates internal accounting (`TokenRoyaltyData`) for *earned* royalties and emits detailed `RoyaltyAttributed` events for transparency. **This function does not directly distribute funds.**
-    *   **Merkle Tree Generation:** The off-chain service constructs a Merkle tree where each leaf is `keccak256(abi.encodePacked(recipient_address, total_unpaid_amount))`. `recipient_address` is either a minter or the collection's creator address. `total_unpaid_amount` is the cumulative royalty amount owed to that recipient *up to this point* that hasn't been included in a previous claimable root.
-    *   **Root Submission:** The service account calls `submitRoyaltyMerkleRoot(bytes32 merkleRoot, uint256 totalAmountInTree)` on the distributor. This stores the `merkleRoot` as the active one for the collection, replacing any previous root. The function verifies the caller has `SERVICE_ACCOUNT_ROLE` and checks that `totalAmountInTree` does not exceed the available balance in the distributor for this collection. It emits a `MerkleRootSubmitted` event.
+5.  **Royalty Data Processing & Accrual Updates:**
+    *   **Off-Chain Processing:** An off-chain service monitors `Transfer` events, fetches sale prices from marketplaces, calculates royalty shares (minter/creator) based on the `_collectionConfigs`, and determines amounts owed to each recipient.
+    *   **Accrual Updates:** The service account calls `updateAccruedRoyalties` on `CentralizedRoyaltyDistributor`, providing details for multiple recipients and their earned royalty amounts. This function (restricted to `SERVICE_ACCOUNT_ROLE` or `DEFAULT_ADMIN_ROLE`) updates internal accounting of total accrued royalties for each recipient and emits detailed `RoyaltyAccrued` events for transparency.
 
-6.  **Royalty Claiming (Merkle Proof):**
-    *   Minters and the creator (or updated royalty recipient) call the public `claimRoyaltiesMerkle(address collection, address recipient, uint256 amount, bytes32[] calldata merkleProof)` function on the distributor.
-    *   The function verifies the provided `merkleProof` against the currently active `merkleRoot` for the collection, ensuring the leaf `keccak256(abi.encodePacked(recipient, amount))` is valid.
-    *   It checks that the `recipient` hasn't already claimed against this specific `merkleRoot`.
-    *   If valid, it transfers the `amount` ETH to the `recipient` and marks the claim as processed for that `recipient` and `merkleRoot`. It emits a `MerkleRoyaltyClaimed` event.
+6.  **Royalty Claiming:**
+    *   Minters and the creator (or updated royalty recipient) can call the public `claimRoyalties(address collection, uint256 amount)` function on the distributor at any time.
+    *   The function checks that the caller has sufficient unclaimed royalties by verifying that their total accrued royalties minus already claimed royalties is greater than or equal to the requested amount.
+    *   It also verifies that the distributor contract has sufficient ETH balance to fulfill the claim.
+    *   If valid, it updates the claimed amount for the recipient and transfers the requested ETH amount to them. It emits a `RoyaltyClaimed` event.
+    *   Recipients can check their claimable balance at any time using the `getClaimableRoyalties(address collection, address recipient)` view function.
 
 **5. Contract Details & Implementation**
 
 *   **`DiamondGenesisPass`:** Standard ERC721 features plus minting logic. Integrates `CentralizedRoyaltyAdapter`. Uses `Ownable` for core ownership (multisig) and `AccessControl` for `SERVICE_ACCOUNT_ROLE`. Forwards mint payments directly to the `owner()` address. Uses modifiers `onlyOwner` and `onlyOwnerOrServiceAccount`. `_requireCallerIsContractOwner` uses the `owner()` check for `MetadataURI` compatibility. Provides functions to update the royalty recipient address (`setRoyaltyRecipient` or legacy `updateCreatorAddress`).
 
 *   **`CentralizedRoyaltyDistributor`:**
-    *   Uses `AccessControl` for `DEFAULT_ADMIN_ROLE` (managing collections, oracle settings) and `SERVICE_ACCOUNT_ROLE` (submitting data/Merkle roots).
+    *   Uses `AccessControl` for `DEFAULT_ADMIN_ROLE` (managing collections, oracle settings) and `SERVICE_ACCOUNT_ROLE` (updating accrued royalties).
     *   **State Variables:**
         *   `_collectionConfigs`: Maps collection address to configuration (royalty fee, shares, creator)
         *   `_minters`: Maps collection + token ID to minter address 
         *   `_minterCollectionTokens`: Maps minter + collection to token IDs minted
         *   `_collectionRoyalties`: Tracks ETH received per collection
         *   `_collectionERC20Royalties`: Tracks ERC20 tokens received per collection
-        *   `_activeMerkleRoots`: Maps collection to current active Merkle root
-        *   `_hasClaimedMerkle`: Tracks if an address has claimed against a Merkle root
+        *   `_totalAccruedRoyalties`: Maps collection + recipient to total royalties accrued 
+        *   `_totalClaimedRoyalties`: Maps collection + recipient to total royalties claimed
         *   `_tokenRoyaltyData`: Tracks royalty data per token (minter, volume, royalties earned)
         *   `_collectionRoyaltyData`: Tracks collection-level royalty data
         *   `_lastOracleUpdateBlock` and `_oracleUpdateMinBlockInterval`: For oracle rate limiting
@@ -120,46 +119,45 @@ Our solution uses a three-contract system with refined access control and clearl
         *   `registerCollection`: Registers a collection with royalty configuration (`onlyRole(DEFAULT_ADMIN_ROLE)`)
         *   `setTokenMinter`: Records the minter for a token (`onlyCollection(collection)`)
         *   `updateCreatorAddress`: Updates the address that receives creator royalties (callable by current creator or admin)
-        *   `batchUpdateRoyaltyData`: Processes sale data and attributes royalties internally (`onlyRole(SERVICE_ACCOUNT_ROLE)` or `DEFAULT_ADMIN_ROLE`)
-        *   `submitRoyaltyMerkleRoot`: Submits a Merkle root for claims (`onlyRole(SERVICE_ACCOUNT_ROLE)`)
-        *   `claimRoyaltiesMerkle`: Verifies Merkle proof and sends funds (public, nonReentrant)
+        *   `updateAccruedRoyalties`: Updates accrued royalties for multiple recipients (`onlyRole(SERVICE_ACCOUNT_ROLE)` or `DEFAULT_ADMIN_ROLE`)
+        *   `claimRoyalties`: Allows recipients to claim their accrued royalties (public, nonReentrant)
+        *   `getClaimableRoyalties`: View function to check claimable amount (public view)
         *   `updateRoyaltyDataViaOracle`: Triggers oracle update (public, rate-limited)
         *   `setOracleUpdateMinBlockInterval`: Sets rate limit for oracle updates (`onlyRole(DEFAULT_ADMIN_ROLE)`)
         *   `addCollectionRoyalties`/`addCollectionERC20Royalties`: Manually add royalties to a collection
         *   `fulfillRoyaltyData`: Chainlink callback (planned but not yet fully implemented)
     *   **Key Events:**
-        *   `RoyaltyAttributed`: Emitted when royalties are attributed internally
-        *   `MerkleRootSubmitted`: Emitted when a new Merkle root is submitted
-        *   `MerkleRoyaltyClaimed`: Emitted when a claim is processed
+        *   `RoyaltyAccrued`: Emitted when royalties are accrued for a recipient
+        *   `RoyaltyClaimed`: Emitted when a recipient claims royalties
         *   `RoyaltyReceived`/`ERC20RoyaltyReceived`: Emitted when royalties are received
         *   `CreatorAddressUpdated`: Emitted when the creator/royalty recipient address is updated
 
 **6. Security Considerations & Risk Mitigations**
 
-*   **Distributor Security:** The `CentralizedRoyaltyDistributor` holds funds. It uses `ReentrancyGuard` for claim functions and checks fund availability before submissions/claims.
+*   **Distributor Security:** The `CentralizedRoyaltyDistributor` holds funds. It uses `ReentrancyGuard` for claim functions and checks fund availability before allowing claims.
 *   **Owner Privileges:** The `owner()` (multisig) controls critical settings, receives mint proceeds, and can update the royalty recipient address.
 *   **Admin Privileges:** The `DEFAULT_ADMIN_ROLE` holder (ideally the owner/multisig) manages collections and roles.
-*   **Service Account Permissions:** The `SERVICE_ACCOUNT_ROLE` has limited permissions (submitting data, submitting Merkle roots). If compromised, it cannot change core settings or steal funds directly, but could submit incorrect data/roots, potentially preventing or delaying legitimate claims until corrected by an Admin. Requires trust in the off-chain service operator.
+*   **Service Account Permissions:** The `SERVICE_ACCOUNT_ROLE` has limited permissions (updating accrued royalties). If compromised, it cannot change core settings but could potentially inflate accrued royalties for specific recipients. Requires trust in the off-chain service operator.
 *   **Creator/Royalty Recipient Update:** The ability to change the creator address allows transferring royalty rights but also introduces a risk if ownership is compromised. Functions to update the creator are protected by access control.
-*   **Merkle Root Integrity:** Users trust the off-chain service to generate correct Merkle roots that include all owed royalties. The balance check in `submitRoyaltyMerkleRoot` provides a basic safeguard against promising more funds than available.
-*   **Distribution Trust:** Users trust the distributor's Merkle claim logic and fund availability.
-*   **Price Accuracy:** Users trust the off-chain service accurately determines sale prices for calculating earned amounts in `batchUpdateRoyaltyData`.
+*   **Distribution Trust:** Users trust the distributor's claim logic and fund availability.
+*   **Price Accuracy:** Users trust the off-chain service accurately determines sale prices for calculating earned amounts in `updateAccruedRoyalties`.
 *   **Oracle Security:** The implementation includes rate limiting for oracle updates to prevent abuse. Oracle fulfillment should be restricted to the oracle node.
-*   **Gas Costs:** Claiming royalties via `claimRoyaltiesMerkle` is significantly cheaper per user than individual tracking/claims, as the main computation is off-chain. `batchUpdateRoyaltyData` and `submitRoyaltyMerkleRoot` still incur costs, borne by the service operator.
+*   **Gas Costs:** The `updateAccruedRoyalties` function might be gas-intensive when updating many recipients at once. The service might need to batch these updates for gas efficiency.
+*   **Race Conditions:** The direct accrual tracking system eliminates race conditions between updating royalties and claiming, as claims are always based on the current state of accrued minus claimed amounts.
 
 **7. Off-Chain Components**
 
-*   **Batch Price Discovery & Royalty Service:** A service that:
+*   **Royalty Calculation & Distribution Service:** A service that:
     *   Monitors `Transfer` events.
     *   Collects price data from marketplace APIs.
     *   Calculates royalty shares based on sale prices and collection configuration.
-    *   Calls `batchUpdateRoyaltyData` to record earned amounts and emit attribution events.
-    *   Periodically (e.g., daily/weekly) calculates cumulative unpaid royalties for *all* minters and the creator/royalty recipient.
-    *   Constructs the Merkle tree of claimable balances.
-    *   Calls `submitRoyaltyMerkleRoot` with the new root and total amount.
+    *   Calls `updateAccruedRoyalties` (or `updateAccruedERC20Royalties`) to update accrued royalties for minters and creators.
 *   **Oracle Implementation:** A Chainlink oracle adapter that connects the off-chain price discovery service to the on-chain distributor contract.
+    *   Triggered by `updateRoyaltyDataViaOracle` on the distributor.
+    *   Fetches processed royalty data (recipients and amounts) from the off-chain service.
+    *   Calls `fulfillRoyaltyData` on the distributor.
 *   **Administrative Dashboard:** A UI for the contract owner to monitor transfers, add/remove service accounts, update the royalty recipient, and manage the distribution system.
-*   **User Claim Interface:** A UI for minters and creators/royalty recipients to check their earned royalties and generate the Merkle proofs needed to claim.
+*   **User Claim Interface:** A UI for minters and creators/royalty recipients to check their earned royalties and claim them.
 
 **8. On-Chain Analytics**
 
@@ -168,11 +166,11 @@ Our solution uses a three-contract system with refined access control and clearl
     *   `uint256 public totalClaimedRoyalty;` // total royalties claimed across all recipients
 
 *   **Contract Modifications:**
-    *   In `submitRoyaltyMerkleRoot`, update:
+    *   In `updateAccruedRoyalties`, update:
         ```solidity
-        totalAccruedRoyalty += totalAmountInTree;
+        totalAccruedRoyalty += amount;
         ```
-    *   In `claimRoyaltiesMerkle`, update:
+    *   In `claimRoyalties`, update:
         ```solidity
         totalClaimedRoyalty += amount;
         ```
@@ -183,11 +181,7 @@ Our solution uses a three-contract system with refined access control and clearl
     *   `function totalUnclaimed() external view returns (uint256) { return totalAccruedRoyalty - totalClaimedRoyalty; }`
     *   `function collectionUnclaimed(address collection) external view returns (uint256) { return _collectionRoyalties[collection]; }`
     *   `function totalUnclaimedRoyalties() external view returns (uint256)` // On DiamondGenesisPass, returns the collection-specific unclaimed amount
-    *   _Per-recipient analytics are derived off-chain via emitted events (MerkleRootSubmitted, MerkleRoyaltyClaimed, RoyaltyAttributed)._  
-    *   **Off-Chain Analytics Workflow:**
-        - **Events:** `RoyaltyAttributed`, `MerkleRootSubmitted`, `MerkleRoyaltyClaimed`
-        - **Indexing:** Use The Graph or a custom service to subscribe to these events and maintain per-recipient `accrued`, `claimed`, and `unclaimed` balances off-chain.
-        - **Data Access:** Expose GraphQL/REST endpoints or a dApp front-end for querying real-time per-user metrics based on the indexed data.
+    *   `function getClaimableRoyalties(address collection, address recipient) external view returns (uint256)` // Returns the claimable amount for a specific recipient
 
 **9. Royalty Data Collection & Claims Process**
 
@@ -214,70 +208,85 @@ Our solution uses a three-contract system with refined access control and clearl
     }
     ```
 
-*   **Batch Update Process:**
+*   **Accrual Update Process:**
     ```solidity
-    function batchUpdateRoyaltyData(
+    function updateAccruedRoyalties(
         address collection,
-        uint256[] calldata tokenIds,
-        address[] calldata minters,
-        address creator,
-        uint256[] calldata salePrices,
-        uint256[] calldata transactionTimestamps,
-        bytes32[] calldata transactionHashes
-    ) external /* restricted */ {
-        // For each sale:
-        // 1. Calculate minterShareAmount and creatorShareAmount based on salePrice and collection config
-        // 2. Update tokenData[tokenId].minterRoyaltyEarned += minterShareAmount;
-        // 3. Update tokenData[tokenId].creatorRoyaltyEarned += creatorShareAmount;
-        // 4. Mark transactionHash as processed
-        // 5. Emit RoyaltyAttributed event
-    }
-    ```
-
-*   **Merkle Root Submission Process:**
-    ```solidity
-    function submitRoyaltyMerkleRoot(
-        address collection, 
-        bytes32 merkleRoot, 
-        uint256 totalAmountInTree
+        address[] calldata recipients,
+        uint256[] calldata amounts
     ) external onlyRole(SERVICE_ACCOUNT_ROLE) {
-        // Verify caller and check balance sufficiency
-        _activeMerkleRoots[collection] = merkleRoot;
-        _merkleRootTotalAmount[merkleRoot] = totalAmountInTree;
-        _merkleRootSubmissionTime[merkleRoot] = block.timestamp;
-        emit MerkleRootSubmitted(collection, merkleRoot, totalAmountInTree, block.timestamp);
+        require(recipients.length == amounts.length, "Length mismatch");
+        
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address recipient = recipients[i];
+            uint256 amount = amounts[i];
+            
+            _totalAccruedRoyalties[collection][recipient] += amount;
+            
+            emit RoyaltyAccrued(collection, recipient, amount);
+            totalAccruedRoyalty += amount;
+        }
     }
     ```
 
 *   **Claim Process:**
     ```solidity
-    function claimRoyaltiesMerkle(
+    function claimRoyalties(
         address collection,
-        address recipient,
-        uint256 amount,
-        bytes32[] calldata merkleProof
+        uint256 amount
     ) external nonReentrant {
-        // Verify proof against active root
-        // Check not already claimed
-        // Mark as claimed
-        // Transfer ETH to recipient
-        emit MerkleRoyaltyClaimed(recipient, amount, activeRoot, collection);
+        address recipient = msg.sender;
+        
+        // Check that the recipient has sufficient unclaimed royalties
+        uint256 accrued = _totalAccruedRoyalties[collection][recipient];
+        uint256 claimed = _totalClaimedRoyalties[collection][recipient];
+        require(accrued - claimed >= amount, "Insufficient unclaimed royalties");
+        
+        // Check that the contract has sufficient balance
+        require(_collectionRoyalties[collection] >= amount, "Insufficient collection balance");
+        
+        // Update claimed amount and reduce collection balance
+        _totalClaimedRoyalties[collection][recipient] += amount;
+        _collectionRoyalties[collection] -= amount;
+        totalClaimedRoyalty += amount;
+        
+        // Transfer the funds
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "Transfer failed");
+        
+        emit RoyaltyClaimed(collection, recipient, amount);
     }
     ```
 
-*   **ERC20 Claim Process (Planned):**
+*   **View Claimable Amount:**
     ```solidity
-    function claimERC20RoyaltiesMerkle(
+    function getClaimableRoyalties(
         address collection,
-        address recipient,
+        address recipient
+    ) external view returns (uint256) {
+        uint256 accrued = _totalAccruedRoyalties[collection][recipient];
+        uint256 claimed = _totalClaimedRoyalties[collection][recipient];
+        return accrued - claimed;
+    }
+    ```
+
+*   **ERC20 Support (Planned):**
+    ```solidity
+    function updateAccruedERC20Royalties(
+        address collection,
         address token,
-        uint256 amount,
-        bytes32[] calldata merkleProof
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) external onlyRole(SERVICE_ACCOUNT_ROLE) {
+        // Similar to updateAccruedRoyalties but for ERC20 tokens
+    }
+    
+    function claimERC20Royalties(
+        address collection,
+        address token,
+        uint256 amount
     ) external nonReentrant {
-        // Similar to claimRoyaltiesMerkle but for ERC20 tokens
-        // Verify proof against active root for the token
-        // Transfer ERC20 tokens to recipient
-        emit ERC20MerkleRoyaltyClaimed(recipient, token, amount, activeRoot, collection);
+        // Similar to claimRoyalties but for ERC20 tokens
     }
     ```
 
@@ -291,42 +300,58 @@ Our solution uses a three-contract system with refined access control and clearl
     }
     ```
 
-*   **Oracle Callback (Planned):**
-    ```solidity
-    function fulfillRoyaltyData(
-        bytes32 _requestId,
-        address collection,
-        uint256[] memory tokenIds,
-        address[] memory minters,
-        address creator,
-        uint256[] memory salePrices,
-        bytes32[] memory transactionHashes
-    ) external recordChainlinkFulfillment(_requestId) {
-        // Process data similar to batchUpdateRoyaltyData
-        // This would be triggered by Chainlink oracle after updateRoyaltyDataViaOracle call
-    }
-    ```
-
 **10. Future Considerations & Improvements**
 
-*   **Gas Optimization:** Achieved significantly for claims using the Merkle distributor pattern. Batch updates (`batchUpdateRoyaltyData`) remain potentially costly but are handled by the service operator.
+*   **Gas Optimization:** The `updateAccruedRoyalties` function might need optimization for handling many recipients efficiently. Consider batching strategies.
 *   **Enhanced Access Control:** `setTokenMinter` restricted to the collection contract. Clear roles for Admin (`DEFAULT_ADMIN_ROLE`) and Service (`SERVICE_ACCOUNT_ROLE`).
 *   **Marketplace Integration:** Explore direct integrations with major marketplaces via their APIs to automate price discovery.
 *   **On-Chain Price Verification:** Research potential methods to verify sale prices on-chain without relying solely on off-chain services.
-*   **Mint Revenue Distribution:** Explicitly separated. Mint revenue (`msg.value` from minting functions) goes directly to the `owner()` of the `DiamondGenesisPass` contract. Only secondary market royalties flow into the distributor for splitting via Merkle claims.
-*   **Merkle Root Management:** The off-chain service must carefully manage how roots are generated (e.g., cumulative unpaid vs. periodic). The current on-chain design assumes only the latest root is active for claims. Define recovery procedures if a bad root is submitted.
+*   **Mint Revenue Distribution:** Explicitly separated. Mint revenue (`msg.value` from minting functions) goes directly to the `owner()` of the `DiamondGenesisPass` contract. Only secondary market royalties flow into the distributor for splitting.
 *   **ERC-2981 Changes:** Monitor for changes in the ERC-2981 standard or marketplace implementations that might allow direct support for multiple royalty recipients.
 *   **ERC20 Royalty Implementation:** 
-    *   Complete the ERC20 royalty claiming functionality using Merkle proofs
-    *   Add support for tracking ERC20 royalties in the batch update process
-    *   Create separate Merkle roots for each ERC20 token type
+    *   Complete the ERC20 royalty claiming functionality (already present).
+    *   Ensure ERC20 tracking and accrual process is robust (`updateAccruedERC20Royalties`).
 *   **Multiple Collection Management:** Enhance the admin dashboard to manage multiple collections efficiently from a single interface.
 *   **Oracle Service Completion:**
-    *   Implement the Chainlink oracle adapter
-    *   Complete the `fulfillRoyaltyData` function to securely process oracle responses
-    *   Add secure oracle node communication
+    *   Implement the Chainlink oracle adapter.
+    *   Complete the `fulfillRoyaltyData` function to securely process oracle responses **by calling `updateAccruedRoyalties` or `updateAccruedERC20Royalties` with the data provided by the oracle.** It should *not* perform royalty calculations itself but rather relay the results from the trusted off-chain service via the oracle.
+    *   Add secure oracle node communication (e.g., restricting `fulfillRoyaltyData` caller).
 *   **Transaction Indexing:** Implement more sophisticated indexing methods to quickly locate missing price data for efficient batch updates.
-*   **Testing and Auditing:** Comprehensive testing and security audit before full production deployment.
+*   **Testing and Auditing:** Comprehensive testing (including the updated Oracle flow) and security audit before full production deployment.
+
+**11. Accrual System Implementation**
+
+### Accrual System Requirements
+
+*   **Updating Accrued Royalties:** The off-chain service must accurately calculate royalty shares and update accrued amounts via `updateAccruedRoyalties`.
+
+*   **Preventing Double Accrual:** The system must prevent double-counting royalties for the same sale:
+    * Keep a record of processed transaction hashes
+    * Only accrue royalties for sales that haven't been processed
+
+*   **Claiming Royalties:** The system allows recipients to claim their royalties at any time, up to their unclaimed balance.
+
+### Claim Security
+
+*   **Balance Verification:** The contract verifies that:
+    * The recipient has sufficient unclaimed royalties
+    * The contract has sufficient ETH to fulfill the claim
+
+*   **Reentrancy Protection:** The contract uses OpenZeppelin's `ReentrancyGuard` to prevent reentrancy attacks during claims.
+
+*   **Order of Operations:** The contract follows the checks-effects-interactions pattern:
+    * First checks balances
+    * Then updates state variables
+    * Only then transfers ETH
+
+### Off-Chain Service Requirements
+
+*   **Production Implementation:**
+    * Monitor blockchain for NFT transfers
+    * Query marketplace APIs for sale prices
+    * Calculate royalty splits based on collection configuration
+    * Update accrued royalties via `updateAccruedRoyalties`
+    * Provide UI for users to view and claim their royalties
 
 **Minter Status as a Tradable Commodity (Updated Spec)**
 
@@ -399,7 +424,7 @@ Our solution uses a three-contract system with refined access control and clearl
 ### 4. Royalty Handling
 - The transaction is recorded as a sale in the CentralizedRoyaltyDistributor
 - Royalties are properly attributed between minter and creator based on collection configuration
-- The distribution follows the same Merkle claim pattern as marketplace sales
+- The distribution follows the same accrual pattern as marketplace sales
 
 ### 5. Security & Edge Cases
 - Only the token owner can accept bids for their token

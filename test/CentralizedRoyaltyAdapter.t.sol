@@ -53,8 +53,8 @@ contract CentralizedRoyaltyAdapterTest is Test {
         assertEq(nft.minterOf(1), user1);
     }
 
-    function testActiveMerkleRootInitiallyZero() public view {
-        // No merkle roots submitted yet
-        assertEq(nft.activeMerkleRoot(), bytes32(0));
+    function testInitialClaimableRoyaltiesAreZero() public view {
+        // Initial claimable royalties should be zero
+        assertEq(nft.getClaimableRoyalties(user1), 0);
     }
 } 

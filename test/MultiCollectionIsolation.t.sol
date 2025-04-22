@@ -52,57 +52,80 @@ contract MultiCollectionIsolationTest is Test {
         // Fund accounts
         vm.deal(user1, 10 ether);
         vm.deal(user2, 10 ether);
+        // Fund creators for balance checks later
+        vm.deal(creator1, 10 ether);
+        vm.deal(creator2, 10 ether);
     }
     
-    function testCollectionIsolation() public {
+    // Renamed test to reflect direct accrual
+    function testCollectionIsolationWithDirectAccrual() public {
         // Mint tokens from both collections
         vm.startPrank(user1);
-        nft1.mint{value: 0.1 ether}(user1);
-        nft2.mint{value: 0.1 ether}(user1);
+        nft1.mint{value: 0.1 ether}(user1); // Mint token 1 in collection 1
+        vm.stopPrank();
+        vm.startPrank(user2);
+        nft2.mint{value: 0.1 ether}(user2); // Mint token 1 in collection 2
         vm.stopPrank();
         
         // Verify minting
         assertEq(nft1.ownerOf(1), user1);
-        assertEq(nft2.ownerOf(1), user1);
+        assertEq(nft2.ownerOf(1), user2);
         
-        // Add royalties to both collections
-        vm.deal(address(this), 2 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft1));
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft2));
+        // Add funds to both collections' royalty pools
+        uint256 pool1Amount = 1 ether;
+        uint256 pool2Amount = 1.5 ether;
+        vm.deal(admin, pool1Amount + pool2Amount); // Deal funds to admin to add
+        vm.prank(admin);
+        distributor.addCollectionRoyalties{value: pool1Amount}(address(nft1));
+        vm.prank(admin);
+        distributor.addCollectionRoyalties{value: pool2Amount}(address(nft2));
         
         // Verify royalties are tracked separately
-        assertEq(distributor.getCollectionRoyalties(address(nft1)), 1 ether);
-        assertEq(distributor.getCollectionRoyalties(address(nft2)), 1 ether);
+        assertEq(distributor.getCollectionRoyalties(address(nft1)), pool1Amount);
+        assertEq(distributor.getCollectionRoyalties(address(nft2)), pool2Amount);
         
-        // Create Merkle roots for each collection
-        bytes32 root1 = keccak256(abi.encodePacked(address(creator1), uint256(0.5 ether)));
-        bytes32 root2 = keccak256(abi.encodePacked(address(creator2), uint256(0.75 ether)));
+        // Accrue claimable royalties for each creator in their respective collection
+        uint256 claimAmount1 = 0.5 ether;
+        uint256 claimAmount2 = 0.75 ether;
         
-        // Submit roots
+        address[] memory recipients1 = new address[](1); recipients1[0] = creator1;
+        uint256[] memory amounts1 = new uint256[](1); amounts1[0] = claimAmount1;
+        
+        address[] memory recipients2 = new address[](1); recipients2[0] = creator2;
+        uint256[] memory amounts2 = new uint256[](1); amounts2[0] = claimAmount2;
+        
         vm.startPrank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft1), root1, 0.5 ether);
-        distributor.submitRoyaltyMerkleRoot(address(nft2), root2, 0.75 ether);
+        distributor.updateAccruedRoyalties(address(nft1), recipients1, amounts1);
+        distributor.updateAccruedRoyalties(address(nft2), recipients2, amounts2);
         vm.stopPrank();
         
-        // Verify roots are set correctly for each collection
-        assertEq(distributor.getActiveMerkleRoot(address(nft1)), root1);
-        assertEq(distributor.getActiveMerkleRoot(address(nft2)), root2);
+        // Verify claimable amounts are set correctly for each collection
+        assertEq(distributor.getClaimableRoyalties(address(nft1), creator1), claimAmount1);
+        assertEq(distributor.getClaimableRoyalties(address(nft2), creator2), claimAmount2);
+        assertEq(distributor.getClaimableRoyalties(address(nft1), creator2), 0, "Creator2 should have 0 claimable in NFT1");
+        assertEq(distributor.getClaimableRoyalties(address(nft2), creator1), 0, "Creator1 should have 0 claimable in NFT2");
         
         // Creator1 claims from collection1
+        uint256 c1BalanceBefore = creator1.balance;
         vm.prank(creator1);
-        distributor.claimRoyaltiesMerkle(address(nft1), creator1, 0.5 ether, new bytes32[](0));
+        distributor.claimRoyalties(address(nft1), claimAmount1); // Use claimRoyalties
+        assertApproxEqAbs(creator1.balance, c1BalanceBefore + claimAmount1, 1e15);
         
-        // Verify balances after claim
-        assertEq(distributor.getCollectionRoyalties(address(nft1)), 0.5 ether);
-        assertEq(distributor.getCollectionRoyalties(address(nft2)), 1 ether);
+        // Verify balances after claim - only pool1 should change
+        assertEq(distributor.getCollectionRoyalties(address(nft1)), pool1Amount - claimAmount1);
+        assertEq(distributor.getCollectionRoyalties(address(nft2)), pool2Amount); // Pool 2 unchanged
+        assertEq(distributor.getClaimableRoyalties(address(nft1), creator1), 0); // Claimable for creator1 is 0
         
         // Creator2 claims from collection2
+        uint256 c2BalanceBefore = creator2.balance;
         vm.prank(creator2);
-        distributor.claimRoyaltiesMerkle(address(nft2), creator2, 0.75 ether, new bytes32[](0));
+        distributor.claimRoyalties(address(nft2), claimAmount2); // Use claimRoyalties
+        assertApproxEqAbs(creator2.balance, c2BalanceBefore + claimAmount2, 1e15);
         
-        // Verify balances after second claim
-        assertEq(distributor.getCollectionRoyalties(address(nft1)), 0.5 ether);
-        assertEq(distributor.getCollectionRoyalties(address(nft2)), 0.25 ether);
+        // Verify balances after second claim - only pool2 should change
+        assertEq(distributor.getCollectionRoyalties(address(nft1)), pool1Amount - claimAmount1); // Pool 1 unchanged
+        assertEq(distributor.getCollectionRoyalties(address(nft2)), pool2Amount - claimAmount2);
+        assertEq(distributor.getClaimableRoyalties(address(nft2), creator2), 0); // Claimable for creator2 is 0
         
         // Verify collection configurations remain distinct
         (uint256 fee1, uint256 minterShares1Retrieved, uint256 creatorShares1Retrieved, address creatorAddr1) = 

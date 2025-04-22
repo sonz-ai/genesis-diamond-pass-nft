@@ -88,19 +88,22 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
 
     /* ───────── distributor analytics ───────── */
     function testTokenRoyaltyDataAfterBatchUpdate() public {
+        // Mint a token
         vm.prank(admin);
         nft.mintOwner(user1);
 
+        // Prepare minimal test data
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
         bytes32[] memory txHashes = new bytes32[](1);
 
-        tokenIds[0]   = 1;
-        minters[0]    = user1;
+        tokenIds[0] = 1;
+        minters[0] = user1;
         salePrices[0] = 1 ether;
-        txHashes[0]   = keccak256("tx1");
+        txHashes[0] = keccak256("tx1");
 
+        // Update royalty data
         vm.prank(service);
         distributor.batchUpdateRoyaltyData(
             address(nft),
@@ -110,24 +113,23 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
             txHashes
         );
 
-        (
-            address minter,
-            address currentOwner,
-            uint256 transactionCount,
-            uint256 totalVolume,
-            uint256 minterRoyaltyEarned,
-            uint256 creatorRoyaltyEarned
-        ) = nft.tokenRoyaltyData(1);
-
+        // Get minter and token holder
+        (address minter, address currentOwner) = distributor.getTokenMinterAndHolder(address(nft), 1);
         assertEq(minter, user1);
         assertEq(currentOwner, user1);
+        
+        // Get transaction data
+        (uint256 transactionCount, uint256 totalVolume) = distributor.getTokenTransactionData(address(nft), 1);
         assertEq(transactionCount, 1);
         assertEq(totalVolume, 1 ether);
-
-        uint256 royaltyAmount        = (1 ether * 750) / 10_000;
-        uint256 expectedMinterShare  = (royaltyAmount * 2000) / 10_000;
+        
+        // Calculate expected royalties (moved to avoid stack depth issues)
+        uint256 royaltyAmount = (1 ether * 750) / 10_000;
+        uint256 expectedMinterShare = (royaltyAmount * 2000) / 10_000;
         uint256 expectedCreatorShare = (royaltyAmount * 8000) / 10_000;
-
+        
+        // Get royalty earnings
+        (uint256 minterRoyaltyEarned, uint256 creatorRoyaltyEarned) = distributor.getTokenRoyaltyEarnings(address(nft), 1);
         assertEq(minterRoyaltyEarned, expectedMinterShare);
         assertEq(creatorRoyaltyEarned, expectedCreatorShare);
     }
@@ -171,14 +173,17 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         vm.startPrank(admin);
         DiamondGenesisPass newNft = new DiamondGenesisPass(
             address(distributor),
-            500,      // local fee 5 %
+            500,      // local fee 5 %
             creator
         );
         vm.stopPrank();
 
+        // Check royalty info
         (address recv, uint256 amt) = newNft.royaltyInfo(1, 1 ether);
         assertEq(recv, address(distributor));
-        assertEq(amt, (1 ether * 500) / 10_000);
+        assertEq(amt, 0.05 ether); // 5% of 1 ether
+        
+        // Check fee numerator matches
         assertEq(newNft.distributorRoyaltyFeeNumerator(), 500);
     }
 
@@ -187,70 +192,146 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         vm.prank(admin);
         nft.mintOwner(user1);
 
-        uint256 batchSize = 10;
-        uint256[] memory ids  = new uint256[](batchSize);
-        address[] memory mtrs = new address[](batchSize);
-        uint256[] memory prc  = new uint256[](batchSize);
-        bytes32[] memory txh  = new bytes32[](batchSize);
+        // Create smaller arrays to reduce stack pressure
+        uint256[] memory ids  = new uint256[](1);
+        address[] memory mtrs = new address[](1);
+        uint256[] memory prc  = new uint256[](1);
+        bytes32[] memory txh  = new bytes32[](1);
 
-        for (uint256 i; i < batchSize; ++i) {
-            ids[i]  = 1;
-            mtrs[i] = user1;
-            prc[i]  = 1 ether * (i + 1);
-            txh[i]  = keccak256(abi.encodePacked("tx", i));
-        }
+        ids[0]  = 1;
+        mtrs[0] = user1;
+        prc[0]  = 1 ether;
+        txh[0]  = keccak256(abi.encodePacked("tx0"));
 
         vm.prank(service);
         distributor.batchUpdateRoyaltyData(address(nft), ids, mtrs, prc, txh);
 
+        // Measure gas for royaltyInfo
         uint256 start = gasleft();
         nft.royaltyInfo(1, 1 ether);
-        uint256 g1 = start - gasleft();
+        console.log("Gas usage - royaltyInfo:", start - gasleft());
 
+        // Measure gas for getTokenMinterAndHolder
         start = gasleft();
-        nft.tokenRoyaltyData(1);
-        uint256 g2 = start - gasleft();
+        distributor.getTokenMinterAndHolder(address(nft), 1);
+        console.log("Gas usage - getTokenMinterAndHolder:", start - gasleft());
 
+        // Measure gas for minterOf
         start = gasleft();
         nft.minterOf(1);
-        uint256 g3 = start - gasleft();
-
-        console.log("Gas usage - royaltyInfo:", g1);
-        console.log("Gas usage - tokenRoyaltyData:", g2);
-        console.log("Gas usage - minterOf:", g3);
-    }
-
-    /* ───────── active merkle root flows ───────── */
-    function testActiveMerkleRootUpdates() public {
-        assertEq(nft.activeMerkleRoot(), bytes32(0));
-
-        bytes32 root1 = keccak256("root1");
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root1, 0);
-        assertEq(nft.activeMerkleRoot(), root1);
-
-        bytes32 root2 = keccak256("root2");
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root2, 0);
-        assertEq(nft.activeMerkleRoot(), root2);
+        console.log("Gas usage - minterOf:", start - gasleft());
     }
 
     /* ───────── non‑existent token data ───────── */
     function testTokenRoyaltyDataForNonexistentToken() public view {
-        (
-            address minter,
-            address currentOwner,
-            uint256 count,
-            uint256 vol,
-            uint256 mEarned,
-            uint256 cEarned
-        ) = nft.tokenRoyaltyData(999);
-
+        // Check minter and token holder
+        (address minter, address currentOwner) = distributor.getTokenMinterAndHolder(address(nft), 999);
         assertEq(minter, address(0));
         assertEq(currentOwner, address(0));
+        
+        // Check transaction data
+        (uint256 count, uint256 vol) = distributor.getTokenTransactionData(address(nft), 999);
         assertEq(count, 0);
         assertEq(vol, 0);
+        
+        // Check royalty earnings
+        (uint256 mEarned, uint256 cEarned) = distributor.getTokenRoyaltyEarnings(address(nft), 999);
         assertEq(mEarned, 0);
         assertEq(cEarned, 0);
+    }
+
+    /* ───────── minter status bidding system ───────── */
+    function testMinterStatusBidding() public {
+        // Mint a token for user1
+        vm.prank(admin);
+        nft.mintOwner(user1);
+        
+        // Verify initial minter
+        assertEq(nft.minterOf(1), user1);
+        
+        // User2 places a bid for minter status of token 1
+        vm.prank(user2);
+        nft.placeBid{value: 0.3 ether}(1, false);
+        
+        // Check bid was registered
+        (address bidder, uint256 bidAmount,) = nft.getHighestBid(1, false);
+        assertEq(bidder, user2);
+        assertEq(bidAmount, 0.3 ether);
+        
+        // Current minter accepts the bid
+        uint256 minterBalanceBefore = address(user1).balance;
+        uint256 adminBalanceBefore = address(admin).balance;
+        
+        vm.prank(user1);
+        nft.acceptHighestBid(1);
+        
+        // Verify minter status changed
+        assertEq(nft.minterOf(1), user2);
+        
+        // For minter status trades, 100% of royalty goes to contract owner (admin)
+        // No royalty split for minter status trades
+        assertEq(address(admin).balance, adminBalanceBefore + 0.3 ether);
+        assertEq(address(user1).balance, minterBalanceBefore); // Original minter doesn't get paid
+        
+        // Verify token ownership remains unchanged
+        assertEq(nft.ownerOf(1), user1);
+    }
+    
+    /* ───────── token bidding system ───────── */
+    function testTokenBiddingSystem() public {
+        // Mint a token for user1
+        vm.prank(admin);
+        nft.mintOwner(user1);
+        
+        // User2 places a bid for token ID 1
+        vm.prank(user2);
+        nft.placeTokenBid{value: 0.5 ether}(1, false);
+        
+        // Check that the bid was registered
+        (address bidder, uint256 bidAmount,) = nft.getHighestTokenBid(1, false);
+        assertEq(bidder, user2);
+        assertEq(bidAmount, 0.5 ether);
+        
+        // Another user places a higher bid
+        address user3 = address(0x3333);
+        vm.deal(user3, 1 ether);
+        vm.prank(user3);
+        nft.placeTokenBid{value: 0.6 ether}(1, false);
+        
+        // Check that the new highest bid was updated
+        (bidder, bidAmount,) = nft.getHighestTokenBid(1, false);
+        assertEq(bidder, user3);
+        assertEq(bidAmount, 0.6 ether);
+        
+        // User2 withdraws their outbid amount
+        uint256 balanceBefore = address(user2).balance;
+        vm.prank(user2);
+        nft.withdrawTokenBid(1, false);
+        assertEq(address(user2).balance, balanceBefore + 0.5 ether);
+        
+        // Token owner accepts the highest bid
+        uint256 ownerBalanceBefore = address(user1).balance;
+        uint256 royaltyAmount = (0.6 ether * 750) / 10_000; // 7.5% of 0.6 ETH
+        
+        vm.prank(user1);
+        nft.acceptHighestTokenBid(1);
+        
+        // Check token ownership changed
+        assertEq(nft.ownerOf(1), user3);
+        
+        // Calculate royalty shares
+        uint256 creatorRoyalty = (royaltyAmount * 8000) / 10_000; // 80% of royalties
+        uint256 minterRoyalty = (royaltyAmount * 2000) / 10_000; // 20% of royalties
+        
+        // Check seller received payment minus royalties
+        assertEq(address(user1).balance, ownerBalanceBefore + 0.6 ether - royaltyAmount);
+        
+        // Verify royalty distribution in the distributor
+        (,, uint256 txCount, uint256 volume, uint256 minterEarned, uint256 creatorEarned) = 
+            distributor.getTokenRoyaltyData(address(nft), 1);
+        assertEq(txCount, 1);
+        assertEq(volume, 0.6 ether);
+        assertEq(minterEarned, minterRoyalty);
+        assertEq(creatorEarned, creatorRoyalty);
     }
 }

@@ -53,20 +53,21 @@ contract RoyaltyAnalyticsTest is Test {
         distributor.addCollectionRoyalties{value: royalty}(address(pass));
 
         uint256 minterShare = (royalty * 2000) / 10_000;
-        bytes32 merkleRoot  = keccak256(abi.encodePacked(MINTER, minterShare));
 
-        distributor.submitRoyaltyMerkleRoot(address(pass), merkleRoot, minterShare);
-
-        bytes32[] memory emptyProof = new bytes32[](0);
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = MINTER;
+        amounts[0] = minterShare;
+        distributor.updateAccruedRoyalties(address(pass), recipients, amounts);
 
         vm.prank(MINTER);
-        distributor.claimRoyaltiesMerkle(address(pass), MINTER, minterShare, emptyProof);
+        distributor.claimRoyalties(address(pass), minterShare);
 
         assertEq(distributor.totalClaimed(), minterShare);
 
         vm.prank(MINTER);
         vm.expectRevert();
-        distributor.claimRoyaltiesMerkle(address(pass), MINTER, minterShare, emptyProof);
+        distributor.claimRoyalties(address(pass), minterShare);
     }
     
     function testUnclaimedRoyalties() public {
@@ -110,14 +111,15 @@ contract RoyaltyAnalyticsTest is Test {
         
         // Now claim a portion of the royalties
         uint256 minterShare = (royaltyAmount * 2000) / 10_000;
-        bytes32 merkleRoot  = keccak256(abi.encodePacked(MINTER, minterShare));
         
-        distributor.submitRoyaltyMerkleRoot(address(pass), merkleRoot, minterShare);
-        
-        bytes32[] memory emptyProof = new bytes32[](0);
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = MINTER;
+        amounts[0] = minterShare;
+        distributor.updateAccruedRoyalties(address(pass), recipients, amounts);
         
         vm.prank(MINTER);
-        distributor.claimRoyaltiesMerkle(address(pass), MINTER, minterShare, emptyProof);
+        distributor.claimRoyalties(address(pass), minterShare);
         
         // Check updated unclaimed amounts
         assertEq(distributor.totalUnclaimed(), royaltyAmount - minterShare);

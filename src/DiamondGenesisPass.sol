@@ -157,7 +157,7 @@ contract DiamondGenesisPass is
         uint96 royaltyFeeNumerator_, 
         address creator_
     ) 
-    ERC721OpenZeppelin("Diamond Genesis Pass", "DiamondGenesisPass") 
+    ERC721OpenZeppelin("Diamond Genesis Pass Test Beta", "DiamondGenesisPassTestBeta") 
     CentralizedRoyaltyAdapter(royaltyDistributor_, royaltyFeeNumerator_) 
     {
         _creator = creator_; // Store creator for re-registration
@@ -213,13 +213,13 @@ contract DiamondGenesisPass is
         // First check local override
         address minterOverride = _tokenMinterOverrides[tokenId];
         if (minterOverride != address(0)) {
-            if (msg.sender != minterOverride) {
+            if (_msgSender() != minterOverride) {
                 revert NotTokenMinter();
             }
         } else {
             // If no override, check the distributor
             address minter = centralizedDistributor.getMinter(address(this), tokenId);
-            if (msg.sender != minter) {
+            if (_msgSender() != minter) {
                 revert NotTokenMinter();
             }
         }
@@ -235,7 +235,7 @@ contract DiamondGenesisPass is
             revert TokenNotMinted();
         }
         
-        if (msg.sender != ownerOf(tokenId)) {
+        if (_msgSender() != ownerOf(tokenId)) {
             revert NotTokenOwner();
         }
         _;
@@ -366,7 +366,12 @@ contract DiamondGenesisPass is
         
         uint256 firstTokenId = currentSupply + 1;
         for (uint256 i = 0; i < quantity; i++) {
-            _mint(sender, firstTokenId + i); 
+            uint256 tokenId = firstTokenId + i;
+            _mint(sender, tokenId);
+            
+            // Register the minter with the distributor
+            _ensureDistributorRegistration();
+            centralizedDistributor.setTokenMinter(address(this), tokenId, sender);
         }
         
         _mintedCount += quantity; // Optimized count update
@@ -566,7 +571,7 @@ contract DiamondGenesisPass is
      */
     function _requireCallerIsContractOwner() internal view virtual override {
         // Keep Ownable check for MetadataURI compatibility
-        if (msg.sender != owner()) { 
+        if (_msgSender() != owner()) { 
             revert CallerIsNotOwner();
         }
     }
@@ -606,9 +611,9 @@ contract DiamondGenesisPass is
 
     /**
      * @notice Get the total amount of royalties that are currently available to be claimed for this collection
-     * @return The unclaimed royalties amount
+     * @return unclaimedAmount The unclaimed royalties amount
      */
-    function totalUnclaimedRoyalties() external view returns (uint256) {
+    function totalUnclaimedRoyalties() external view override returns (uint256 unclaimedAmount) {
         return centralizedDistributor.collectionUnclaimed(address(this));
     }
 
@@ -895,7 +900,7 @@ contract DiamondGenesisPass is
         }
         
         // Update minter status to the new minter
-        address oldMinter = msg.sender;
+        address oldMinter = _msgSender();
         _tokenMinterOverrides[tokenId] = highestBidder;
         
         // 100% of the payment goes to the contract owner (not to the seller)
@@ -1050,6 +1055,7 @@ contract DiamondGenesisPass is
      * @param tokenId The token ID
      */
     function acceptHighestTokenBid(uint256 tokenId) external nonReentrant onlyTokenOwner(tokenId) {
+        // Restore original code
         // Check for token-specific bids first
         (address tokenBidder, uint256 tokenBidAmount, uint256 tokenBidIndex) = getHighestTokenBid(tokenId, false);
         
@@ -1067,7 +1073,7 @@ contract DiamondGenesisPass is
         }
 
         // Store seller address before any state changes
-        address seller = msg.sender;
+        address seller = _msgSender();
         
         // Calculate royalty amount based on the royalty fee numerator
         uint256 salePrice = highestAmount;
@@ -1122,6 +1128,7 @@ contract DiamondGenesisPass is
         emit SaleRecorded(address(this), tokenId, salePrice);
         emit TokenBidAccepted(seller, highestBidder, tokenId, highestAmount);
         emit RoyaltySent(tokenId, royaltyAmount);
+        // End Restore
     }
     
     /**
