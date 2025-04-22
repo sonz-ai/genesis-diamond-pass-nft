@@ -143,6 +143,17 @@ abstract contract CentralizedRoyaltyAdapter is IERC2981, ERC165 {
     }
 
     /**
+     * @notice Get the total royalties earned for a specific token
+     * @param tokenId The token ID
+     * @return totalRoyalties Total royalties earned for this token
+     */
+    function getTotalTokenRoyalties(uint256 tokenId) external view returns (uint256 totalRoyalties) {
+        CentralizedRoyaltyDistributor distributor = CentralizedRoyaltyDistributor(payable(royaltyDistributor));
+        (,,,, uint256 minterShare, uint256 creatorShare) = distributor.getTokenRoyaltyData(address(this), tokenId);
+        return minterShare + creatorShare;
+    }
+
+    /**
      * @notice Indicates whether the contract implements the specified interface.
      * @dev Overrides supportsInterface in ERC165.
      * @param interfaceId The interface id
