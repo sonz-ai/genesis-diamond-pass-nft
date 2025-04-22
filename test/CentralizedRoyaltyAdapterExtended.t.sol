@@ -277,109 +277,126 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         assertEq(nft.ownerOf(1), user1);
     }
     
-    /* ───────── token bidding system ───────── */
-    function testTokenBiddingSystem() public {
-        console.log("Starting testTokenBiddingSystem");
-        
-        // Mint a token for user1
+    /* ───────── direct accrual system test (simplified) ───────── */
+    function testDirectAccrualSystem() public {
+        // Mint a token to user1
         vm.prank(admin);
         nft.mintOwner(user1);
-        console.log("Minted token 1 to user1");
         
-        // Create a direct simple test for the token bidding
-        // 1. Place bid from user2
-        vm.prank(user2);
-        nft.placeTokenBid{value: 0.5 ether}(1, false);
-        console.log("User2 placed bid of 0.5 ETH");
+        // First add ETH to the distributor for the collection
+        vm.deal(address(this), 0.075 ether);
+        distributor.addCollectionRoyalties{value: 0.075 ether}(address(nft));
         
-        // Check bid was registered
-        (address bidder, uint256 bidAmount,) = nft.getHighestTokenBid(1, false);
-        assertEq(bidder, user2);
-        assertEq(bidAmount, 0.5 ether);
+        // Verify the collection has received the royalties
+        assertEq(distributor.getCollectionRoyalties(address(nft)), 0.075 ether, "Collection should have 0.075 ETH in royalties");
         
-        // 2. Get owner balance before accepting bid
-        uint256 user1BalanceBefore = user1.balance;
-        console.log("User1 balance before accepting bid: %s", user1BalanceBefore);
+        // Simulate a sale by directly updating accrued royalties
+        address[] memory recipients = new address[](2);
+        uint256[] memory amounts = new uint256[](2);
+        bytes32[] memory txHashes = new bytes32[](2);
         
-        // 3. Calculate expected royalty
-        uint256 royaltyAmount = (0.5 ether * 750) / 10_000; // 7.5% of 0.5 ETH
-        uint256 sellerProceeds = 0.5 ether - royaltyAmount;
-        console.log("Expected royalty amount: %s", royaltyAmount);
-        console.log("Expected seller proceeds: %s", sellerProceeds);
+        recipients[0] = user1; // minter
+        recipients[1] = creator; // creator
         
-        // Skip the actual token transfer and royalty handling for this test
-        // Instead, let's test the distributor functionality directly:
+        // 20% of 0.075 = 0.015 ETH to minter (user1)
+        // 80% of 0.075 = 0.06 ETH to creator
+        amounts[0] = 0.015 ether;
+        amounts[1] = 0.06 ether;
         
-        // 4. Set up royalty info in the distributor
-        uint256[] memory tokenIds = new uint256[](1);
-        address[] memory minters = new address[](1);
-        uint256[] memory salePrices = new uint256[](1);
-        bytes32[] memory txHashes = new bytes32[](1);
+        txHashes[0] = keccak256("tx1");
+        txHashes[1] = keccak256("tx1");
         
-        tokenIds[0] = 1;
-        minters[0] = user1; // Original minter
-        salePrices[0] = 0.5 ether;
-        txHashes[0] = keccak256("tokenBid1");
-        
+        // Update accrued royalties
         vm.prank(service);
-        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
-        console.log("Updated royalty data in distributor");
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts, txHashes);
         
-        // 5. Calculate expected royalty shares
-        uint256 minterRoyalty = (royaltyAmount * 2000) / 10_000; // 20% of royalties
-        uint256 creatorRoyalty = (royaltyAmount * 8000) / 10_000; // 80% of royalties
+        // Check claimable royalties
+        uint256 user1Claimable = distributor.getClaimableRoyalties(address(nft), user1);
+        uint256 creatorClaimable = distributor.getClaimableRoyalties(address(nft), creator);
         
-        // 6. Verify the royalty data was recorded
-        (,, uint256 txCount, uint256 volume, uint256 minterEarned, uint256 creatorEarned) = 
-            distributor.getTokenRoyaltyData(address(nft), 1);
-        assertEq(txCount, 1, "Transaction count should be 1");
-        assertEq(volume, 0.5 ether, "Volume should be 0.5 ETH");
-        assertEq(minterEarned, minterRoyalty, "Minter earned should match expected");
-        assertEq(creatorEarned, creatorRoyalty, "Creator earned should match expected");
+        // Verify the correct royalty split was applied
+        assertEq(user1Claimable, 0.015 ether, "Minter should have 20% of royalties claimable");
+        assertEq(creatorClaimable, 0.06 ether, "Creator should have 80% of royalties claimable");
         
-        // 7. Add recipients and amounts for accrual update
+        // Verify only 0.075 ETH in total is accrued (no double counting)
+        assertEq(distributor.totalAccrued(), 0.075 ether, "Total accrued should be exactly 0.075 ETH");
+        
+        // Complete the test by claiming
+        vm.prank(user1);
+        distributor.claimRoyalties(address(nft), user1Claimable);
+        
+        vm.prank(creator);
+        distributor.claimRoyalties(address(nft), creatorClaimable);
+        
+        // Verify all claimed
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0, "User1 should have 0 after claiming");
+        assertEq(distributor.getClaimableRoyalties(address(nft), creator), 0, "Creator should have 0 after claiming");
+        assertEq(distributor.totalClaimed(), 0.075 ether, "Total claimed should match total accrued");
+    }
+
+    /* ───────── royalty distribution test (simplified) ───────── */
+    function testRoyaltyDistribution() public {
+        // Mint a token to user1
+        vm.prank(admin);
+        nft.mintOwner(user1);
+        
+        // Simulate a royalty payment to the distributor
+        uint256 royaltyAmount = 0.075 ether;
+        vm.deal(address(this), royaltyAmount);
+        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
+        
+        // Verify collection royalties were recorded
+        assertEq(distributor.getCollectionRoyalties(address(nft)), royaltyAmount);
+        
+        // Calculate expected shares
+        uint256 minterShare = (royaltyAmount * 2000) / 10000;  // 20% to minter
+        uint256 creatorShare = (royaltyAmount * 8000) / 10000;  // 80% to creator
+        
+        // Update accrued royalties based on the sale
         address[] memory recipients = new address[](2);
         uint256[] memory amounts = new uint256[](2);
         
-        recipients[0] = user1;        // minter
-        recipients[1] = creator;      // creator
-        amounts[0] = minterRoyalty;
-        amounts[1] = creatorRoyalty;
+        recipients[0] = user1; // minter
+        recipients[1] = creator; // creator
+        amounts[0] = minterShare;
+        amounts[1] = creatorShare;
         
         vm.prank(service);
         distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
-        console.log("Updated accrued royalties");
         
-        // 8. Fund the distributor to allow for claims
-        vm.deal(address(this), royaltyAmount);
-        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
-        console.log("Funded distributor with royalty amount");
+        // Check claimable royalties
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), minterShare);
+        assertEq(distributor.getClaimableRoyalties(address(nft), creator), creatorShare);
         
-        // 9. Verify claimable amounts
-        assertEq(distributor.getClaimableRoyalties(address(nft), user1), minterRoyalty, "Claimable royalties for minter");
-        assertEq(distributor.getClaimableRoyalties(address(nft), creator), creatorRoyalty, "Claimable royalties for creator");
+        // Claim royalties
+        uint256 user1BalanceBefore = address(user1).balance;
+        uint256 creatorBalanceBefore = address(creator).balance;
         
-        // 10. Claim royalties
         vm.prank(user1);
-        distributor.claimRoyalties(address(nft), minterRoyalty);
+        distributor.claimRoyalties(address(nft), minterShare);
         
         vm.prank(creator);
-        distributor.claimRoyalties(address(nft), creatorRoyalty);
+        distributor.claimRoyalties(address(nft), creatorShare);
         
-        // 11. Check they were claimed
-        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0, "No more claimable royalties for minter");
-        assertEq(distributor.getClaimableRoyalties(address(nft), creator), 0, "No more claimable royalties for creator");
+        // Verify balances increased correctly
+        assertEq(address(user1).balance, user1BalanceBefore + minterShare);
+        assertEq(address(creator).balance, creatorBalanceBefore + creatorShare);
         
-        console.log("Successfully tested token bidding royalty flow");
+        // Verify royalties are now claimed
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0);
+        assertEq(distributor.getClaimableRoyalties(address(nft), creator), 0);
     }
 
-    /* ───────── direct accrual system ───────── */
-    function testDirectAccrualSystem() public {
-        // Mint a token for user1
+    /* ───────── test royalty tracking for burned tokens ───────── */
+    function testRoyaltyTrackingForBurnedTokens() public {
+        // Mint a token to user1
         vm.prank(admin);
         nft.mintOwner(user1);
         
-        // Prepare sales data
+        // Verify user1 is the minter
+        assertEq(nft.getMinterOf(1), user1);
+        
+        // Simulate a sale by recording royalty data
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
@@ -388,64 +405,28 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         tokenIds[0] = 1;
         minters[0] = user1;
         salePrices[0] = 1 ether;
-        txHashes[0] = keccak256("sale1");
+        txHashes[0] = keccak256("tx1");
         
-        // Record the sale via batchUpdateRoyaltyData
         vm.prank(service);
         distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
         
-        // Calculate expected royalty amounts
-        uint256 royaltyAmount = (1 ether * 750) / 10_000; // 7.5% of 1 ETH
-        uint256 minterShare = (royaltyAmount * 2000) / 10_000; // 20% of royalties
-        uint256 creatorShare = (royaltyAmount * 8000) / 10_000; // 80% of royalties
+        // Burn the token
+        vm.prank(admin);
+        nft.burn(1);
         
-        // Verify royalty analytics data was updated
-        (,, uint256 txCount, uint256 volume, uint256 minterEarned, uint256 creatorEarned) = 
-            distributor.getTokenRoyaltyData(address(nft), 1);
-        assertEq(txCount, 1);
-        assertEq(volume, 1 ether);
-        assertEq(minterEarned, minterShare);
-        assertEq(creatorEarned, creatorShare);
+        // Verify minter info is still preserved in the distributor
+        assertEq(distributor.getMinter(address(nft), 1), user1);
         
-        // Add recipients and amounts for accrual update
-        address[] memory recipients = new address[](2);
-        uint256[] memory amounts = new uint256[](2);
+        // Verify royalty earnings are still tracked
+        (uint256 minterRoyaltyEarned, uint256 creatorRoyaltyEarned) = distributor.getTokenRoyaltyEarnings(address(nft), 1);
         
-        recipients[0] = user1;        // minter
-        recipients[1] = creator;      // creator
-        amounts[0] = minterShare;
-        amounts[1] = creatorShare;
+        // Calculate expected royalties
+        uint256 royaltyAmount = (1 ether * 750) / 10_000;
+        uint256 expectedMinterShare = (royaltyAmount * 2000) / 10_000;
+        uint256 expectedCreatorShare = (royaltyAmount * 8000) / 10_000;
         
-        // Update accrued royalties
-        vm.prank(service);
-        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
-        
-        // Add ETH to distributor for the collection to allow claims
-        vm.deal(address(this), royaltyAmount);
-        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
-        
-        // Check claimable amounts
-        assertEq(distributor.getClaimableRoyalties(address(nft), user1), minterShare);
-        assertEq(distributor.getClaimableRoyalties(address(nft), creator), creatorShare);
-        
-        // Claim royalties for minter
-        uint256 minterBalanceBefore = user1.balance;
-        vm.prank(user1);
-        distributor.claimRoyalties(address(nft), minterShare);
-        assertEq(user1.balance, minterBalanceBefore + minterShare);
-        
-        // Claim royalties for creator
-        uint256 creatorBalanceBefore = creator.balance;
-        vm.prank(creator);
-        distributor.claimRoyalties(address(nft), creatorShare);
-        assertEq(creator.balance, creatorBalanceBefore + creatorShare);
-        
-        // Verify claims were recorded
-        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0);
-        assertEq(distributor.getClaimableRoyalties(address(nft), creator), 0);
-        
-        // Verify total claimed analytics matches
-        assertEq(distributor.totalClaimed(), royaltyAmount);
+        assertEq(minterRoyaltyEarned, expectedMinterShare);
+        assertEq(creatorRoyaltyEarned, expectedCreatorShare);
     }
 
     /* ───────── royalty recipient update ───────── */
@@ -524,5 +505,72 @@ contract CentralizedRoyaltyAdapterExtendedTest is Test {
         // Verify minter status changed to user3 (who had the higher token-specific bid)
         assertEq(nft.getMinterOf(2), user3);
         assertEq(address(admin).balance, adminBalanceBefore + 0.5 ether);
+    }
+
+    /**
+     * @notice Test transaction hash deduplication in royalty updates
+     * @dev Ensures the same transaction hash can't be processed multiple times
+     */
+    function testTransactionHashDeduplication() public {
+        // Mint a token to user1
+        vm.prank(admin);
+        nft.mintOwner(user1);
+        
+        // Add ETH to the distributor
+        vm.deal(address(distributor), 0.075 ether);
+        vm.deal(address(this), 0.075 ether);
+        distributor.addCollectionRoyalties{value: 0.075 ether}(address(nft));
+        
+        // Create a transaction hash
+        bytes32 txHash = keccak256("tx1");
+        
+        // First update with the transaction hash
+        address[] memory recipients = new address[](2);
+        uint256[] memory amounts = new uint256[](2);
+        bytes32[] memory txHashes = new bytes32[](2);
+        
+        recipients[0] = user1;
+        recipients[1] = creator;
+        amounts[0] = 0.015 ether;
+        amounts[1] = 0.06 ether;
+        txHashes[0] = txHash;
+        txHashes[1] = txHash;
+        
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts, txHashes);
+        
+        // Check initial accrued royalties
+        uint256 initialUser1Accrued = distributor.getClaimableRoyalties(address(nft), user1);
+        uint256 initialCreatorAccrued = distributor.getClaimableRoyalties(address(nft), creator);
+        
+        // Try to update again with the same transaction hash
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts, txHashes);
+        
+        // Verify royalties were not double-counted
+        uint256 finalUser1Accrued = distributor.getClaimableRoyalties(address(nft), user1);
+        uint256 finalCreatorAccrued = distributor.getClaimableRoyalties(address(nft), creator);
+        
+        assertEq(initialUser1Accrued, finalUser1Accrued, "User1 royalties should not increase for duplicate transaction");
+        assertEq(initialCreatorAccrued, finalCreatorAccrued, "Creator royalties should not increase for duplicate transaction");
+    }
+
+    // Helper functions to wrap single values into arrays
+    function _wrapUint(uint256 value) internal pure returns (uint256[] memory) {
+        uint256[] memory array = new uint256[](1);
+        array[0] = value;
+        return array;
+    }
+    
+    function _wrapAddress(address value) internal pure returns (address[] memory) {
+        address[] memory array = new address[](1);
+        array[0] = value;
+        return array;
+    }
+    
+    function _wrapBytes32(bytes32 value) internal pure returns (bytes32[] memory) {
+        bytes32[] memory array = new bytes32[](1);
+        array[0] = value;
+        return array;
     }
 }

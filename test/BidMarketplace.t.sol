@@ -184,7 +184,7 @@ contract BidMarketplaceTest is Test {
      * @notice Basic test for token bid acceptance
      */
     function testAcceptHighestTokenBid() public {
-        console.log("Starting testAcceptHighestTokenBid - simplified version");
+        console.log("Starting testAcceptHighestTokenBid");
         
         // Setup bidder to place a token bid
         vm.deal(bidderA, 5 ether);
@@ -208,77 +208,73 @@ contract BidMarketplaceTest is Test {
         assertEq(nft.ownerOf(1), minter);
         console.log("Token owner before acceptance:", minter);
         
-        // Try different approval approaches
+        // Setup approval
         vm.startPrank(minter);
-        
-        // First, check if we need to clear any previous approvals
-        console.log("Clearing previous approvals");
-        nft.approve(address(0), 1);
-        
-        // Then setup approval specifically to the contract
-        console.log("Setting approval to DiamondGenesisPass contract");
         nft.approve(address(nft), 1);
-        
-        // Also try setting approval for all
-        console.log("Setting approval for all");
-        nft.setApprovalForAll(address(nft), true);
-        
         vm.stopPrank();
         
-        // Print approval info
-        address approvedAddress = nft.getApproved(1);
-        console.log("Current approved address for token 1:", approvedAddress);
+        // Calculate expected royalty
+        uint256 salePrice = 1 ether;
+        uint256 royaltyAmount = (salePrice * 750) / 10_000; // 7.5% of 1 ETH
+        uint256 sellerProceeds = salePrice - royaltyAmount;
         
-        bool isApprovedForAll = nft.isApprovedForAll(minter, address(nft));
-        console.log("Is contract approved for all tokens of minter:", isApprovedForAll ? "yes" : "no");
-        
-        console.log("About to accept highest bid...");
         // Accept the bid
         vm.prank(minter);
-        try nft.acceptHighestTokenBid(1) {
-            console.log("Bid acceptance successful");
-            
-            // Calculate expected royalty and proceeds
-            uint256 salePrice = 1 ether;
-            uint256 royaltyAmount = (salePrice * 750) / 10_000; // 7.5% of 1 ETH
-            uint256 sellerProceeds = salePrice - royaltyAmount;
-            
-            // Verify token ownership transferred
-            address newOwner = nft.ownerOf(1);
-            console.log("New token owner:", newOwner);
-            assertEq(newOwner, bidderA, "Token ownership should transfer to bidder");
-            
-            // Verify royalty sent to distributor
-            assertEq(address(distributor).balance, distributorBalanceBefore + royaltyAmount, "Royalty should be sent to distributor");
-            
-            // Verify seller received proceeds
-            assertEq(minter.balance, minterBalanceBefore + sellerProceeds, "Seller should receive proceeds");
-        } catch Error(string memory reason) {
-            console.log("Acceptance failed with reason:", reason);
-            // Don't actually fail the test - we're debugging
-            assertEq(uint256(1), uint256(1)); // Always pass with explicit type
-        } catch {
-            console.log("Acceptance failed with unknown reason");
-            // Let's try deconstructing the acceptance into steps
-            console.log("Trying manual token transfer approach");
-            
-            // 1. Transfer the token manually
-            vm.prank(minter);
-            nft.transferFrom(minter, bidderA, 1);
-            
-            console.log("Token manually transferred to bidder");
-            address newOwner = nft.ownerOf(1);
-            console.log("New token owner:", newOwner);
-            
-            // Let's examine the getHighestTokenBid function directly
-            (address highBidder, uint256 highBid, uint256 bidIndex) = nft.getHighestTokenBid(1, false);
-            console.log("Highest bidder:", highBidder);
-            console.log("Highest bid amount:", highBid);
-            console.log("Bid index:", bidIndex);
-            
-            // Don't fail the test during debugging
-            assertEq(uint256(1), uint256(1)); // Always pass with explicit type
-        }
+        nft.acceptHighestTokenBid(1);
+        console.log("Bid acceptance successful");
+        
+        // Verify token ownership transferred
+        address newOwner = nft.ownerOf(1);
+        console.log("New token owner:", newOwner);
+        assertEq(newOwner, bidderA, "Token ownership should transfer to bidder");
+        
+        // Verify royalty sent to distributor
+        assertEq(address(distributor).balance, distributorBalanceBefore + royaltyAmount, "Royalty should be sent to distributor");
+        
+        // Verify seller received proceeds
+        assertEq(minter.balance, minterBalanceBefore + sellerProceeds, "Seller should receive proceeds");
+        
+        // Calculate expected royalty shares
+        uint256 minterShare = (royaltyAmount * 2000) / 10_000; // 20% of royalties
+        uint256 creatorShare = (royaltyAmount * 8000) / 10_000; // 80% of royalties
+        
+        // Simulate off-chain service tracking this sale
+        bytes32 txHash = keccak256(abi.encodePacked("token_sale_1"));
+        
+        // Process the sale in the distributor system
+        vm.startPrank(service);
+        
+        // 1. Register the sale details 
+        uint256[] memory tokenIds = new uint256[](1);
+        address[] memory minters = new address[](1);
+        uint256[] memory salePrices = new uint256[](1);
+        bytes32[] memory txHashes = new bytes32[](1);
+        
+        tokenIds[0] = 1;
+        minters[0] = minter; // Original minter
+        salePrices[0] = salePrice;
+        txHashes[0] = txHash;
+        
+        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
+        
+        // 2. Update accrued royalties
+        address[] memory recipients = new address[](2);
+        uint256[] memory amounts = new uint256[](2);
+        bytes32[] memory accrualHashes = new bytes32[](2);
+        
+        recipients[0] = minter;
+        recipients[1] = creator;
+        amounts[0] = minterShare;
+        amounts[1] = creatorShare;
+        accrualHashes[0] = txHash;
+        accrualHashes[1] = txHash;
+        
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts, accrualHashes);
+        vm.stopPrank();
+        
+        // Verify correct royalty accrual
+        assertEq(distributor.getClaimableRoyalties(address(nft), minter), minterShare, "Minter should have claimable royalties");
+        assertEq(distributor.getClaimableRoyalties(address(nft), creator), creatorShare, "Creator should have claimable royalties");
     }
 
     /**
@@ -298,7 +294,13 @@ contract BidMarketplaceTest is Test {
         uint256 minterBalanceBefore = minter.balance;
         uint256 creatorBalanceBefore = creator.balance;
         
-        // 3. Record the sale data in the distributor
+        // 3. Add funds to distributor so claims can work
+        vm.deal(address(this), royaltyAmount);
+        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
+        
+        // 4. Record the sale data in the distributor
+        // This will automatically calculate and accrue the royalties
+        // based on the collection config (20% minter, 80% creator)
         uint256[] memory tokenIds = new uint256[](1);
         address[] memory minters = new address[](1);
         uint256[] memory salePrices = new uint256[](1);
@@ -312,45 +314,32 @@ contract BidMarketplaceTest is Test {
         vm.prank(service);
         distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
         
-        // 4. Calculate minter and creator shares
-        uint256 minterShare = (royaltyAmount * 2000) / 10_000; // 20% of royalties
-        uint256 creatorShare = (royaltyAmount * 8000) / 10_000; // 80% of royalties
+        // 5. Calculate expected shares (for verification only)
+        uint256 expectedMinterShare = (royaltyAmount * 2000) / 10_000; // 20% of royalties
+        uint256 expectedCreatorShare = (royaltyAmount * 8000) / 10_000; // 80% of royalties
         
-        console.log("Minter share:", minterShare);
-        console.log("Creator share:", creatorShare);
+        console.log("Expected minter share:", expectedMinterShare);
+        console.log("Expected creator share:", expectedCreatorShare);
         
-        // 5. Update accrued royalties
-        address[] memory recipients = new address[](2);
-        uint256[] memory amounts = new uint256[](2);
+        // 6. Verify the accrued amounts match our expectations
+        uint256 minterClaimable = distributor.getClaimableRoyalties(address(nft), minter);
+        uint256 creatorClaimable = distributor.getClaimableRoyalties(address(nft), creator);
         
-        recipients[0] = minter;
-        recipients[1] = creator;
-        amounts[0] = minterShare;
-        amounts[1] = creatorShare;
+        assertEq(minterClaimable, expectedMinterShare, "Minter should have correct claimable royalties");
+        assertEq(creatorClaimable, expectedCreatorShare, "Creator should have correct claimable royalties");
         
-        vm.prank(service);
-        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
-        
-        // 6. Add funds to distributor
-        vm.deal(address(this), royaltyAmount);
-        distributor.addCollectionRoyalties{value: royaltyAmount}(address(nft));
-        
-        // 7. Verify claimable amounts
-        assertEq(distributor.getClaimableRoyalties(address(nft), minter), minterShare, "Minter should have claimable royalties");
-        assertEq(distributor.getClaimableRoyalties(address(nft), creator), creatorShare, "Creator should have claimable royalties");
-        
-        // 8. Claim royalties
+        // 7. Claim royalties
         vm.prank(minter);
-        distributor.claimRoyalties(address(nft), minterShare);
+        distributor.claimRoyalties(address(nft), minterClaimable);
         
         vm.prank(creator);
-        distributor.claimRoyalties(address(nft), creatorShare);
+        distributor.claimRoyalties(address(nft), creatorClaimable);
         
-        // 9. Verify balances after claiming
-        assertEq(minter.balance, minterBalanceBefore + minterShare, "Minter should receive their share");
-        assertEq(creator.balance, creatorBalanceBefore + creatorShare, "Creator should receive their share");
+        // 8. Verify balances after claiming
+        assertEq(minter.balance, minterBalanceBefore + minterClaimable, "Minter should receive their share");
+        assertEq(creator.balance, creatorBalanceBefore + creatorClaimable, "Creator should receive their share");
         
-        // 10. Verify claimed amounts
+        // 9. Verify claimed amounts
         assertEq(distributor.getClaimableRoyalties(address(nft), minter), 0, "Minter should have 0 royalties after claim");
         assertEq(distributor.getClaimableRoyalties(address(nft), creator), 0, "Creator should have 0 royalties after claim");
         
