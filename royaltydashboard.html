@@ -1,0 +1,104 @@
+// ClaimRoyalties.tsx
+import React, { useState, useEffect } from 'react'
+import {
+  WagmiConfig,
+  createConfig,
+  configureChains,
+  useAccount,
+  useConnect,
+  useDisconnect,
+  usePrepareContractWrite,
+  useContractWrite
+} from 'wagmi'
+import { mainnet } from 'wagmi/chains'
+import { publicProvider } from 'wagmi/providers/public'
+import { InjectedConnector } from 'wagmi/connectors/injected'
+
+/*───────────────────────────▼ CONFIG ▼───────────────────────────*/
+const DISTRIBUTOR = '0xYOUR_DISTRIBUTOR'
+const COLLECTION   = '0xYOUR_COLLECTION'
+
+const distributorAbi = [
+  {
+    name: 'claimRoyaltiesMerkle',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'collection', type: 'address' },
+      { name: 'recipient',  type: 'address' },
+      { name: 'amount',     type: 'uint256' },
+      { name: 'merkleProof',type: 'bytes32[]' }
+    ],
+    outputs: []
+  }
+]
+
+const { chains, publicClient } = configureChains([mainnet], [publicProvider()])
+const wagmiConfig = createConfig({
+  autoConnect: true,
+  connectors: [new InjectedConnector({ chains })],
+  publicClient
+})
+/*───────────────────────────▲ CONFIG ▲───────────────────────────*/
+
+function ClaimUI() {
+  const { address, isConnected } = useAccount()
+  const { connect }       = useConnect({ connector: new InjectedConnector() })
+  const { disconnect }    = useDisconnect()
+  const [claim, setClaim] = useState<{ amount: bigint; proof: `0x${string}`[] } | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!isConnected) return
+    ;(async () => {
+      setLoading(true)
+      try {
+        const res = await fetch(
+          `/api/claim-proof?collection=${COLLECTION}&recipient=${address}`
+        )
+        if (res.ok) {
+          const json = await res.json() as { amount: string; proof: string[] }
+          setClaim({ amount: BigInt(json.amount), proof: json.proof as `0x${string}`[] })
+        }
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [isConnected, address])
+
+  const { config } = usePrepareContractWrite({
+    address: DISTRIBUTOR,
+    abi: distributorAbi,
+    functionName: 'claimRoyaltiesMerkle',
+    args: claim
+      ? [COLLECTION, address!, claim.amount, claim.proof]
+      : undefined,
+    enabled: !!(claim && isConnected)
+  })
+  const { write, isLoading: txLoading, isSuccess } = useContractWrite(config)
+
+  if (!isConnected)
+    return <button onClick={() => connect()}>Connect Wallet</button>
+
+  if (loading) return <p>Loading…</p>
+  if (!claim)   return <p>No claimable royalties.</p>
+
+  return (
+    <div style={{ padding: 24 }}>
+      <p>Claimable: {Number(claim.amount) / 1e18} ETH</p>
+      <button disabled={!write || txLoading} onClick={() => write?.()}>
+        {txLoading ? 'Claiming…' : 'Claim'}
+      </button>
+      {isSuccess && <p>Tx sent! Check wallet.</p>}
+      <button onClick={() => disconnect()}>Disconnect</button>
+    </div>
+  )
+}
+
+export default function App() {
+  return (
+    <WagmiConfig config={wagmiConfig}>
+      <ClaimUI />
+    </WagmiConfig>
+  )
+}

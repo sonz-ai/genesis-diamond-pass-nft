@@ -58,18 +58,23 @@ This project uses [Foundry](https://book.getfoundry.sh/) for development, testin
    cd genesis-pass-nft
    ```
 
-2. Install dependencies:
+2. Initialize and update git submodules:
+   ```bash
+   git submodule update --init --recursive
+   ```
+
+3. Install dependencies:
    ```bash
    forge install
    npm install
    ```
 
-3. Build the project:
+4. Build the project:
    ```bash
    forge build
    ```
 
-4. Run tests:
+5. Run tests:
    ```bash
    forge test
    ```
@@ -271,6 +276,44 @@ After deployment, you can interact with the contract using the following functio
 - `withdraw()`: Withdraw contract funds to the owner
 - `setDefaultRoyalty(address receiver, uint96 feeNumerator)`: Update the default royalty information
 - `setTokenRoyalty(uint256 tokenId, address receiver, uint96 feeNumerator)`: Set royalty information for a specific token
+
+## Claim UI
+
+This project provides a web-based Claim Interface for users to claim their accrued royalties and an Admin Dashboard for managing distributions.
+
+### Admin Dashboard Guide
+
+- **Access**: Navigate to `https://app.genesis-pass.ai/admin-dashboard` and authenticate with your Service Account credentials.
+- **Upload Merkle Root**: Go to the "Merkle Submissions" tab, enter the new root hash and total amount, and click "Submit".
+- **Monitor Claims**: View real-time claim status under the "Claims" tab. Export claim logs as CSV for reporting.
+- **Manage Service Accounts**: Under "Settings", add or remove service account addresses for collection management.
+
+### User Claim Interface Guide
+
+- **Connect Wallet**: Visit `https://app.genesis-pass.ai/claim` and connect your Ethereum wallet (e.g., MetaMask).
+- **Enter Details**: The interface will detect your address and show your claimable amount.
+- **Claim Royalties**: Click "Claim" to submit a transaction that claims your pending royalties.
+- **View History**: See past claim transactions and amounts on the "History" tab.
+
+## Off-Chain Architecture & APIs
+
+### Architecture Diagram
+
+The system architecture comprises a serverless backend, Merkle tree generator, and web UI components.
+![Architecture Diagram](docs/architecture.png)
+
+### API Documentation
+
+- **GET** `/api/v1/claims?address=<walletAddress>`: Returns pending royalty amounts and proofs.
+- **POST** `/api/v1/roots`: Submit new Merkle root data. Body: `{ "collection": "<address>", "merkleRoot": "<bytes32>", "totalAmount": <uint256> }`.
+- **GET** `/api/v1/status`: Health check endpoint for off-chain services.
+
+### Integration Guide
+
+1. Fetch pending claims via the `/api/v1/claims` endpoint.
+2. Use `merkletreejs` or similar to generate the Merkle proof from the returned data.
+3. Call `claimRoyaltiesMerkle` or `claimERC20RoyaltiesMerkle` on the smart contract with the proof.
+4. Monitor transaction status and update UI accordingly.
 
 ## License
 
