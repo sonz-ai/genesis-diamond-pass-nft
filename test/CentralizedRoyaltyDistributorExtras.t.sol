@@ -111,8 +111,8 @@ contract CentralizedRoyaltyDistributorExtrasTest is Test {
         address[] memory emptyAddress = new address[](0);
         bytes32[] memory emptyBytes32 = new bytes32[](0);
         vm.prank(user1);
-        // Check for specific OZ AccessControl revert string
-        vm.expectRevert(bytes("AccessControl: account ")); // Add space if needed based on exact revert
+        // Update expected error to match the actual error in the contract
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
         distributor.batchUpdateRoyaltyData(
             address(nft),
             emptyUint,

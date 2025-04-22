@@ -37,10 +37,15 @@ contract ReentrancyAttacker {
     }
 }
 
-// ERC20 that reverts on transfer
+// ERC20 that reverts on transfer but allows initial minting
 contract RevertingERC20 is ERC20 {
     constructor() ERC20("Reverting Token", "RVT") {
-        _mint(msg.sender, 1000 ether);
+        // Don't mint to msg.sender in constructor anymore
+    }
+    
+    // Special function to mint tokens directly to an address - for test setup only
+    function mintTo(address recipient, uint256 amount) external {
+        _mint(recipient, amount);
     }
     
     function transfer(address, uint256) public pure override returns (bool) {
@@ -60,7 +65,12 @@ contract FeeERC20 is ERC20 {
     
     constructor(address _feeCollector) ERC20("Fee Token", "FEE") {
         feeCollector = _feeCollector;
-        _mint(msg.sender, 1000 ether);
+        // Don't mint to msg.sender in constructor anymore
+    }
+    
+    // Special function to mint tokens directly to an address - for test setup only
+    function mintTo(address recipient, uint256 amount) external {
+        _mint(recipient, amount);
     }
     
     function transfer(address recipient, uint256 amount) public override returns (bool) {
@@ -122,9 +132,9 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         vm.deal(user2, 10 ether);
         vm.deal(address(attacker), 1 ether);
         
-        // Fund ERC20 accounts for tests
-        revertingToken.transfer(address(distributor), 200 ether); // Pre-fund distributor
-        feeToken.transfer(address(distributor), 200 ether); // Pre-fund distributor
+        // Fund ERC20 accounts for tests - using direct minting instead of transfers
+        revertingToken.mintTo(address(distributor), 200 ether); // Pre-fund distributor
+        feeToken.mintTo(address(distributor), 200 ether); // Pre-fund distributor
     }
     
     // Test 1: Registration edge cases (KEEP - Valid)
@@ -258,9 +268,9 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         amounts[0] = accruedAmount;
         
         // Use `addCollectionERC20Royalties` to add tokens to the distributor's collection balance
-        // The setUp already transferred tokens to the distributor address, now associate them with the collection
-        vm.prank(admin); // Or anyone who holds the tokens
-        revertingToken.approve(address(distributor), accruedAmount);
+        // The setUp already minted tokens to the distributor address, now associate them with the collection
+        // Since the distributor already has the tokens and the caller is admin, no approval needed
+        vm.prank(admin); 
         distributor.addCollectionERC20Royalties(address(nft), revertingToken, accruedAmount);
         
         // Accrue the claim for user1
@@ -284,8 +294,8 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         amounts[0] = accruedAmount;
         
         // Add fee tokens to the distributor's collection balance
-        vm.prank(admin); // Or anyone who holds the tokens
-        feeToken.approve(address(distributor), accruedAmount);
+        // Since the distributor already has the tokens and the caller is admin, no approval needed
+        vm.prank(admin);
         distributor.addCollectionERC20Royalties(address(nft), feeToken, accruedAmount);
         
         // Accrue the claim for user1
@@ -326,6 +336,11 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         revertingToken.approve(address(distributor), 0); // Approve 0
         vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__ZeroAmountToDistribute.selector);
         distributor.addCollectionERC20Royalties(address(nft), revertingToken, 0);
+        
+        // Even with tokens already in the distributor's balance, zero amount should still revert
+        vm.prank(admin);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__ZeroAmountToDistribute.selector);
+        distributor.addCollectionERC20Royalties(address(nft), feeToken, 0);
         
         // --- Test Claiming Zero ---
         // Accrue some royalties first
@@ -419,7 +434,7 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
 
         // Should fail if called by random user
         vm.prank(user2);
-        vm.expectRevert(bytes("AccessControl: account")); // OZ AccessControl revert
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
         distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
 
         // Should succeed if called by service account
@@ -451,7 +466,7 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
 
         // Should fail if called by random user
         vm.prank(user2);
-        vm.expectRevert(bytes("AccessControl: account")); // OZ AccessControl revert
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
         distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
 
         // Should succeed if called by service account

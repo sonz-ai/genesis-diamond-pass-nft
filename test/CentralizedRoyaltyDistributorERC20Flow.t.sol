@@ -182,7 +182,7 @@ contract CentralizedRoyaltyDistributorERC20FlowTest is Test {
 
         // Should fail if called by random user (user2)
         vm.prank(user2);
-        vm.expectRevert(bytes("AccessControl: account"));
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
         distributor.updateAccruedERC20Royalties(address(nft), token, recipients, amounts);
 
         // Should succeed if called by service account

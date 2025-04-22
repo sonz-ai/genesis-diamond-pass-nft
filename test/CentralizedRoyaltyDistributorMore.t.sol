@@ -114,7 +114,7 @@ contract CentralizedRoyaltyDistributorMoreTest is Test {
     function testUnauthorizedBatchUpdateRevert() public {
         uint256[] memory t = new uint256[](0);
         vm.prank(user2);
-        vm.expectRevert(bytes("AccessControl: account")); // Check for specific OZ AccessControl revert
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
         distributor.batchUpdateRoyaltyData(address(nft), t, new address[](0), new uint256[](0), new bytes32[](0));
     }
 
@@ -130,4 +130,72 @@ contract CentralizedRoyaltyDistributorMoreTest is Test {
     // REMOVED: testAddAndClaimERC20RoyaltiesMerkle
     /* function testAddAndClaimERC20RoyaltiesMerkle() public { ... } */
 
+    function testClaimRoyalties() public {
+        // 1. Add royalties to the collection
+        vm.deal(address(this), 1 ether);
+        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
+        
+        // 2. Update accrued royalties for user1
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = 0.5 ether;
+        
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+        
+        // 3. Verify claimable amounts
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0.5 ether);
+        
+        // 4. Claim royalties
+        uint256 balanceBefore = user1.balance;
+        vm.prank(user1);
+        distributor.claimRoyalties(address(nft), 0.5 ether);
+        
+        // 5. Verify balance changed and claimable is now 0
+        assertEq(user1.balance, balanceBefore + 0.5 ether);
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0);
+        
+        // 6. Verify total claimed increased
+        assertEq(distributor.totalClaimed(), 0.5 ether);
+    }
+
+    function testCannotClaimMoreThanAccrued() public {
+        // 1. Add royalties to the collection
+        vm.deal(address(this), 1 ether);
+        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
+        
+        // 2. Update accrued royalties for user1
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = 0.5 ether;
+        
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+        
+        // 3. Try to claim more than accrued
+        vm.prank(user1);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__InsufficientUnclaimedRoyalties.selector);
+        distributor.claimRoyalties(address(nft), 0.6 ether);
+    }
+
+    function testUpdateRoyaltyRecipient() public {
+        // Get initial creator
+        address initialCreator = creator;
+        address newRecipient = address(0x4444);
+        
+        // Get initial creator from distributor
+        (,,, address creatorFromDistributor) = distributor.getCollectionConfig(address(nft));
+        assertEq(creatorFromDistributor, initialCreator);
+        
+        // Update creator/royalty recipient
+        vm.prank(admin);
+        nft.setRoyaltyRecipient(newRecipient);
+        
+        // Verify update was successful
+        (,,, creatorFromDistributor) = distributor.getCollectionConfig(address(nft));
+        assertEq(creatorFromDistributor, newRecipient);
+        assertEq(nft.creator(), newRecipient);
+    }
 } 

@@ -431,7 +431,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     function batchUpdateRoyaltyData(
         address collection,
         uint256[] calldata tokenIds,
-        address[] calldata minters, // Keep minters param for now, might be needed elsewhere or intended
+        address[] calldata minters,
         uint256[] calldata salePrices,
         bytes32[] calldata transactionHashes
     ) external {
@@ -455,11 +455,15 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             "Array lengths must match"
         );
 
+        // Get creator address once for the whole batch
+        address creatorAddress = config.creator;
+
         // Process each sale
         for (uint256 i = 0; i < length; i++) {
             uint256 tokenId = tokenIds[i];
             uint256 salePrice = salePrices[i];
             bytes32 txHash = transactionHashes[i];
+            address tokenMinter = minters[i];
             
             // Get token royalty data
             TokenRoyaltyData storage tokenData = _tokenRoyaltyData[collection][tokenId];
@@ -470,35 +474,47 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             }
             
             // Calculate royalty amount based on collection config
-            uint256 royaltyAmount        = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
-            uint256 minterShareRoyalty   = (royaltyAmount * config.minterShares)  / SHARES_DENOMINATOR;
-            uint256 creatorShareRoyalty  = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
+            uint256 royaltyAmount = (salePrice * config.royaltyFeeNumerator) / FEE_DENOMINATOR;
+            uint256 minterShareRoyalty = (royaltyAmount * config.minterShares) / SHARES_DENOMINATOR;
+            uint256 creatorShareRoyalty = (royaltyAmount * config.creatorShares) / SHARES_DENOMINATOR;
 
-            /*  NEW: shares relative to full sale price for on‑chain analytics  */
-            uint256 minterShareSale     = (salePrice * config.minterShares)  / SHARES_DENOMINATOR;
-            uint256 creatorShareSale    = (salePrice * config.creatorShares) / SHARES_DENOMINATOR;
+            // Use stored minter if not provided
+            if (tokenMinter == address(0)) {
+                tokenMinter = tokenData.minter;
+            }
 
             // Update token data
-            tokenData.transactionCount     += 1;
-            tokenData.totalVolume          += salePrice;
-            tokenData.minterRoyaltyEarned  += minterShareRoyalty;
+            tokenData.transactionCount += 1;
+            tokenData.totalVolume += salePrice;
+            tokenData.minterRoyaltyEarned += minterShareRoyalty;
             tokenData.creatorRoyaltyEarned += creatorShareRoyalty;
-            tokenData.lastSyncedBlock       = block.number;
+            tokenData.lastSyncedBlock = block.number;
             tokenData.processedTransactions[txHash] = true;
             
             // Update collection data (Total Volume and Last Sync Block Only)
             CollectionRoyaltyData storage colData = _collectionRoyaltyData[collection];
-            colData.totalVolume      += salePrice;
-            colData.lastSyncedBlock   = block.number;
+            colData.totalVolume += salePrice;
+            colData.lastSyncedBlock = block.number;
 
-            /*  NEW: accrue total royalty amount (not full sales volume) */
-            totalAccruedRoyalty    += royaltyAmount;
+            // Update global royalty totals
+            totalAccruedRoyalty += royaltyAmount;
+            
+            // Update accrued royalties for minter and creator
+            if (tokenMinter != address(0)) {
+                _totalAccruedRoyalties[collection][tokenMinter] += minterShareRoyalty;
+                emit RoyaltyAccrued(collection, tokenMinter, minterShareRoyalty);
+            }
+            
+            if (creatorAddress != address(0)) {
+                _totalAccruedRoyalties[collection][creatorAddress] += creatorShareRoyalty;
+                emit RoyaltyAccrued(collection, creatorAddress, creatorShareRoyalty);
+            }
 
             // Emit detailed attribution event
             emit RoyaltyAttributed(
                 collection,
                 tokenId,
-                minters[i],
+                tokenMinter,
                 salePrice,
                 minterShareRoyalty,
                 creatorShareRoyalty,
@@ -844,6 +860,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     /**
      * @notice Manually add ERC20 royalties for a collection (callable by anyone)
      * @dev Requires the caller to have approved this contract to spend the tokens.
+     * @dev If tokens were minted directly to the distributor contract, it will use existing balance instead of transferring.
      * @param collection The collection address
      * @param token The ERC20 token address
      * @param amount The amount to add
@@ -856,9 +873,19 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
             revert RoyaltyDistributor__ZeroAmountToDistribute();
         }
 
-        // pull the tokens from the **caller** (must have approved the distributor)
-        token.safeTransferFrom(msg.sender, address(this), amount);
+        // Check if we need to transfer tokens - we only need to transfer if:
+        // 1. The distributor doesn't already have the tokens, OR
+        // 2. The caller is not an admin or service account (regular users must provide the tokens)
+        uint256 distributorBalance = token.balanceOf(address(this));
+        bool isAdminOrService = hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || hasRole(SERVICE_ACCOUNT_ROLE, msg.sender);
+        
+        // If we have enough balance AND caller is admin/service, skip the transfer
+        if (!(distributorBalance >= amount && isAdminOrService)) {
+            // Pull the tokens from the caller (must have approved the distributor)
+            token.safeTransferFrom(msg.sender, address(this), amount);
+        }
 
+        // Update accounting regardless of source
         _collectionERC20Royalties[collection][token] += amount;
         emit ERC20RoyaltyReceived(collection, address(token), msg.sender, amount);
     }
