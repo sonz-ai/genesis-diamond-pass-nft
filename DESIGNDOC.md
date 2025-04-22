@@ -38,7 +38,7 @@ Our solution uses a three-contract system with refined access control and clearl
     *   **Supply Management:**
         * **Total Maximum Supply:** 888 tokens
         * **Whitelist Mint Maximum Supply:** 212 tokens
-        * **Public Mint Supply:** Remaining tokens (676 tokens) after whitelist phase
+        * **Public Mint Supply:** Remaining tokens (388 tokens) after whitelist phase. 288 was sold to pre-sale.
 
 *   **`CentralizedRoyaltyAdapter.sol` (Pattern Contract - Implemented by DiamondGenesisPass):**
     *   Defines the standard interface and logic for an NFT contract to interact with the `CentralizedRoyaltyDistributor`.
