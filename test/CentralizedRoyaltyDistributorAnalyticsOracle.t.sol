@@ -53,12 +53,15 @@ contract CentralizedRoyaltyDistributorAnalyticsOracleTest is Test {
         assertEq(lastBlock, expectedBlock);
         assertEq(collected, 0);
 
-        // Merkle root and claims
-        assertEq(distributor.getActiveMerkleRoot(address(nft)), bytes32(0));
-        assertFalse(distributor.hasClaimedMerkle(bytes32(0), user));
-        (uint256 totalAmt, uint256 ts) = distributor.getMerkleRootInfo(bytes32(0));
-        assertEq(totalAmt, 0);
-        assertEq(ts, 0);
+        // Check initial claimable royalties for users
+        assertEq(distributor.getClaimableRoyalties(address(nft), user), 0);
+        assertEq(distributor.getClaimableRoyalties(address(nft), creator), 0);
+        
+        // Check collection unclaimed amount
+        assertEq(distributor.collectionUnclaimed(address(nft)), 0);
+        
+        // Check total unclaimed
+        assertEq(distributor.totalUnclaimed(), 0);
     }
 
     function testSetOracleIntervalAndUnauthorized() public {

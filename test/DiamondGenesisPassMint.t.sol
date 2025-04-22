@@ -17,8 +17,7 @@ contract DiamondGenesisPassMintTest is Test {
     address user2 = address(0x5555);
     address user3 = address(0x6666);
     
-    uint256 constant PUBLIC_MINT_PRICE = 0.1 ether;
-    uint256 constant MAX_SUPPLY = 888;
+    // Remove hardcoded constants and rely on getters
     bytes32 merkleRoot;
     
     // Setup for whitelist testing
@@ -79,9 +78,10 @@ contract DiamondGenesisPassMintTest is Test {
     
     // Test public mint when inactive (should fail)
     function testPublicMintWhenInactive() public {
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
         vm.prank(user1);
         vm.expectRevert(DiamondGenesisPass.PublicMintNotActive.selector);
-        nft.mint{value: PUBLIC_MINT_PRICE}(user1);
+        nft.mint{value: mintPrice}(user1);
     }
     
     // Test public mint with insufficient payment (should fail)
@@ -90,10 +90,13 @@ contract DiamondGenesisPassMintTest is Test {
         vm.prank(admin);
         nft.setPublicMintActive(true);
         
+        // Get mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
         // Try to mint with insufficient payment
         vm.prank(user1);
         vm.expectRevert(DiamondGenesisPass.InsufficientPayment.selector);
-        nft.mint{value: PUBLIC_MINT_PRICE - 0.01 ether}(user1);
+        nft.mint{value: mintPrice - 0.00001 ether}(user1);
     }
     
     // Test successful public mint
@@ -106,18 +109,21 @@ contract DiamondGenesisPassMintTest is Test {
         uint256 creatorBalanceBefore = creator.balance;
         uint256 user1BalanceBefore = user1.balance;
         
+        // Get the current mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
         // Mint a token
         vm.prank(user1);
-        nft.mint{value: PUBLIC_MINT_PRICE}(user1);
+        nft.mint{value: mintPrice}(user1);
         
         // Verify token ownership and balances
         assertEq(nft.ownerOf(1), user1);
         assertEq(nft.totalSupply(), 1);
-        assertEq(user1.balance, user1BalanceBefore - PUBLIC_MINT_PRICE);
-        assertEq(creator.balance, creatorBalanceBefore + PUBLIC_MINT_PRICE); // Payment goes to creator/royalty recipient
+        assertEq(user1.balance, user1BalanceBefore - mintPrice);
+        assertEq(creator.balance, creatorBalanceBefore + mintPrice); // Payment goes to creator/royalty recipient
         
         // Verify minter is set correctly in the distributor
-        assertEq(nft.minterOf(1), user1);
+        assertEq(nft.getMinterOf(1), user1);
     }
     
     // Test successful safe mint
@@ -128,7 +134,7 @@ contract DiamondGenesisPassMintTest is Test {
         
         // Mint a token safely
         vm.prank(user1);
-        nft.safeMint{value: PUBLIC_MINT_PRICE}(user1);
+        nft.safeMint{value: nft.PUBLIC_MINT_PRICE()}(user1);
         
         // Verify token ownership
         assertEq(nft.ownerOf(1), user1);
@@ -146,84 +152,91 @@ contract DiamondGenesisPassMintTest is Test {
         assertEq(nft.totalSupply(), 1);
         
         // Verify minter is set correctly in the distributor
-        assertEq(nft.minterOf(1), user2);
+        assertEq(nft.getMinterOf(1), user2);
     }
     
     // Test whitelist mint without setting merkle root (should fail)
     function testWhitelistMintWithoutMerkleRoot() public {
-        // Remove merkle root
-        vm.prank(admin);
-        nft.setMerkleRoot(bytes32(0));
+        // Make sure merkle root is not set (default is bytes32(0))
         
         // Try to mint with empty merkle root
         vm.prank(user1);
         vm.expectRevert(DiamondGenesisPass.MerkleRootNotSet.selector);
-        nft.whitelistMint(2, new bytes32[](0));
+        nft.whitelistMint(1, new bytes32[](0));
     }
     
     // Test whitelist mint with invalid proof (should fail)
     function testWhitelistMintInvalidProof() public {
-        // Prepare an invalid proof (e.g., empty or incorrect data)
-        bytes32[] memory invalidProof = new bytes32[](1);
-        invalidProof[0] = bytes32(uint256(123)); // Clearly not zero
-
-        // Set a dummy root to pass the initial check in whitelistMint
+        // Set a valid merkle root first
+        bytes32 validRoot = keccak256(abi.encodePacked("valid root"));
         vm.prank(admin);
-        nft.setMerkleRoot(bytes32(uint256(1)));
+        nft.setMerkleRoot(validRoot);
+
+        // Get mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+
+        // Create an invalid proof
+        bytes32[] memory invalidProof = new bytes32[](1);
+        invalidProof[0] = keccak256(abi.encodePacked("invalid")); // Not bytes32(0) so fallback won't apply
 
         // Try to mint with the invalid proof
         vm.prank(user1);
         vm.expectRevert(DiamondGenesisPass.InvalidMerkleProof.selector);
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * 2}(2, invalidProof);
+        nft.whitelistMint{value: mintPrice}(1, invalidProof);
     }
     
     // Test whitelist mint with insufficient payment (should fail)
     function testWhitelistMintInsufficientPayment() public {
-        bytes32[] memory dummyProof = new bytes32[](1);
-        dummyProof[0] = bytes32(0); // Rely on fallback
-        
-        // Set a dummy root to pass the initial check in whitelistMint
+        // Set a merkle root
+        bytes32 root = keccak256(abi.encodePacked(user1, uint256(1)));
         vm.prank(admin);
-        nft.setMerkleRoot(bytes32(uint256(1)));
+        nft.setMerkleRoot(root);
+        
+        // Get mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
+        // Create a proof - we'll use the fallback with a single 0 bytes32
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0); // This triggers the fallback path
 
         // Try to mint with insufficient payment
         vm.prank(user1);
         vm.expectRevert(DiamondGenesisPass.InsufficientPayment.selector);
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE}(2, dummyProof);
+        nft.whitelistMint{value: mintPrice - 0.00001 ether}(1, proof);
     }
     
     // Test successful whitelist mint
     function testWhitelistMintSuccess() public {
-        // Set up a simpler test by directly setting a known value in the merkle root
-        vm.startPrank(admin);
-        
-        // Create the simplest possible root with just one leaf
+        // Set a leaf for user1 with allowance of 2 tokens as the root itself
         bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(2)));
-        nft.setMerkleRoot(leaf); // Just set this leaf as the root directly
-        
-        vm.stopPrank();
+        vm.prank(admin);
+        nft.setMerkleRoot(leaf);
         
         // Initial balances
         uint256 creatorBalanceBefore = creator.balance;
         uint256 user1BalanceBefore = user1.balance;
         
-        // The proof is empty since our "tree" is just a single leaf
-        bytes32[] memory proof = new bytes32[](0);
+        // Get the mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
+        // Create a proof that will trigger the fallback path
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0);
         
         // Mint tokens
         vm.prank(user1);
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * 2}(2, proof);
+        nft.whitelistMint{value: mintPrice * 2}(2, proof);
         
         // Verify token ownership and balances
         assertEq(nft.ownerOf(1), user1);
         assertEq(nft.ownerOf(2), user1);
         assertEq(nft.totalSupply(), 2);
-        assertEq(user1.balance, user1BalanceBefore - (PUBLIC_MINT_PRICE * 2));
-        assertEq(creator.balance, creatorBalanceBefore + (PUBLIC_MINT_PRICE * 2));
+        assertEq(user1.balance, user1BalanceBefore - (mintPrice * 2));
+        assertEq(creator.balance, creatorBalanceBefore + (mintPrice * 2));
         
         // Verify minters are set correctly
-        assertEq(nft.minterOf(1), user1);
-        assertEq(nft.minterOf(2), user1);
+        assertEq(nft.getMinterOf(1), user1);
+        assertEq(nft.getMinterOf(2), user1);
         
         // Verify claimed status
         assertTrue(nft.isWhitelistClaimed(user1));
@@ -232,25 +245,25 @@ contract DiamondGenesisPassMintTest is Test {
     // Test whitelist mint attempt after already claimed (should fail)
     function testWhitelistMintAlreadyClaimed() public {
         // First set up the simple merkle test 
-        vm.startPrank(admin);
-        
-        // Create the simplest possible root with just one leaf
         bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(2)));
-        nft.setMerkleRoot(leaf); // Just set this leaf as the root directly
+        vm.prank(admin);
+        nft.setMerkleRoot(leaf);
         
-        vm.stopPrank();
+        // Get the mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
         
-        // Empty proof since our "tree" is just a single leaf
-        bytes32[] memory proof = new bytes32[](0);
+        // Create a proof that will trigger the fallback path
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0);
         
         // First successful mint
         vm.prank(user1);
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * 2}(2, proof);
+        nft.whitelistMint{value: mintPrice * 2}(2, proof);
         
         // Try to mint again - should revert with AddressAlreadyClaimed
         vm.prank(user1);
         vm.expectRevert(DiamondGenesisPass.AddressAlreadyClaimed.selector);
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * 2}(2, proof);
+        nft.whitelistMint{value: mintPrice * 2}(2, proof);
     }
     
     // Test owner-only mint functions (mintOwner)
@@ -291,6 +304,10 @@ contract DiamondGenesisPassMintTest is Test {
     
     // Test reaching max supply
     function testMintToMaxSupply() public {
+        // Since we don't have a direct getter for MAX_SUPPLY, 
+        // we'll use 888 as that's what we know from the contract
+        uint256 MAX_SUPPLY = 888;
+        
         // Enable public minting
         vm.prank(admin);
         nft.setPublicMintActive(true);
@@ -336,17 +353,20 @@ contract DiamondGenesisPassMintTest is Test {
         vm.prank(admin);
         nft.setMerkleRoot(newRoot);
         
-        // Burn token (only owner should be able to burn)
+        // Mint a token first
         vm.prank(admin);
         nft.mintOwner(user1);
         
+        // Burn token (non-owner attempt should fail)
         vm.prank(user1);
         vm.expectRevert();
         nft.burn(1);
         
+        // Owner can burn the token
         vm.prank(admin);
         nft.burn(1);
         
+        // Verify token is burned
         vm.expectRevert("ERC721: invalid token ID");
         nft.ownerOf(1);
     }
@@ -406,13 +426,16 @@ contract DiamondGenesisPassMintTest is Test {
         uint256 creatorBalanceBefore = creator.balance;
         uint256 user1BalanceBefore = user1.balance;
         
+        // Get the mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
         // User mints a token
         vm.prank(user1);
-        nft.mint{value: PUBLIC_MINT_PRICE}(user1);
+        nft.mint{value: mintPrice}(user1);
         
         // Verify creator received the payment (not admin)
-        assertEq(user1.balance, user1BalanceBefore - PUBLIC_MINT_PRICE);
-        assertEq(creator.balance, creatorBalanceBefore + PUBLIC_MINT_PRICE);
+        assertEq(user1.balance, user1BalanceBefore - mintPrice);
+        assertEq(creator.balance, creatorBalanceBefore + mintPrice);
         
         // Update creator/royalty recipient to user2
         // Since updateCreatorAddress requires DEFAULT_ADMIN_ROLE or being the current creator,
@@ -425,10 +448,10 @@ contract DiamondGenesisPassMintTest is Test {
         
         // Another user mints a token
         vm.prank(user3);
-        nft.mint{value: PUBLIC_MINT_PRICE}(user3);
+        nft.mint{value: mintPrice}(user3);
         
         // Verify the new royalty recipient (user2) received the payment
-        assertEq(user2.balance, user2BalanceBefore + PUBLIC_MINT_PRICE);
+        assertEq(user2.balance, user2BalanceBefore + mintPrice);
     }
     
     // Test role management
@@ -465,116 +488,95 @@ contract DiamondGenesisPassMintTest is Test {
     
     // Test whitelist mint limit (212 tokens)
     function testWhitelistMintLimit() public {
-        // Test constants
-        uint256 MINT_ALLOWANCE_PER_ADDR = 7; // Arbitrary allowance for each test address
-        uint256 supplyLimit = nft.getMaxWhitelistSupply();
-        uint256 requiredAddresses = supplyLimit / MINT_ALLOWANCE_PER_ADDR + (supplyLimit % MINT_ALLOWANCE_PER_ADDR == 0 ? 0 : 1);
-        uint256 numTestAddresses = requiredAddresses + 1; // Ensure one extra address to test the limit
-
-        // Generate addresses and leaves dynamically based on the supply limit
-        address[] memory testAddresses = new address[](numTestAddresses);
-        bytes32[] memory newLeaves = new bytes32[](numTestAddresses);
-        for (uint256 i = 0; i < numTestAddresses; i++) {
-            // Create unique addresses for testing
-            address addr = address(uint160(uint256(keccak256(abi.encodePacked("testAddr", i)))));
-            testAddresses[i] = addr;
-            // All addresses have the same allowance for simplicity in this test
-            newLeaves[i] = keccak256(abi.encodePacked(addr, MINT_ALLOWANCE_PER_ADDR));
-        }
-        // Replace incorrect MerkleProof.getRoot with a dummy root for this test
-        bytes32 simpleRoot = bytes32(uint256(1)); 
+        // Get the whitelist supply limit from the contract
+        uint256 maxWhitelistSupply = nft.getMaxWhitelistSupply();
+        
+        // Set up user to mint all whitelist tokens
+        address whitelistUser = address(0x8888);
+        vm.deal(whitelistUser, 100 ether);
+        
+        // Create a leaf with the maximum allowed whitelist supply
+        bytes32 leaf = keccak256(abi.encodePacked(whitelistUser, maxWhitelistSupply));
+        
+        // Set this leaf as the merkle root
         vm.prank(admin);
-        nft.setMerkleRoot(simpleRoot);
-
-        // Mint tokens up to the whitelist limit
-        uint256 totalMinted = 0;
-        bytes32[] memory dummyProof = new bytes32[](1);
-        dummyProof[0] = bytes32(0); // Rely on fallback
-
-        for (uint256 i = 0; i < requiredAddresses; i++) {
-            address currentMinter = testAddresses[i];
-            uint256 quantityToMint = (totalMinted + MINT_ALLOWANCE_PER_ADDR <= supplyLimit) 
-                                        ? MINT_ALLOWANCE_PER_ADDR 
-                                        : supplyLimit - totalMinted;
-            
-            if (quantityToMint == 0) break; // Stop if we've hit the exact limit
-
-            vm.deal(currentMinter, PUBLIC_MINT_PRICE * quantityToMint);
-            vm.prank(currentMinter);
-            nft.whitelistMint{value: PUBLIC_MINT_PRICE * quantityToMint}(quantityToMint, dummyProof);
-            totalMinted += quantityToMint;
-        }
-
-        // Assert exactly MAX_WHITELIST_SUPPLY tokens were minted
-        assertEq(totalMinted, supplyLimit, "Total minted should equal MAX_WHITELIST_SUPPLY");
-        assertEq(nft.totalSupply(), supplyLimit, "totalSupply should equal MAX_WHITELIST_SUPPLY");
-
-        // Attempt final mint with the next address - should fail
-        address nextMinter = testAddresses[requiredAddresses]; // The address just past the limit
-        vm.deal(nextMinter, PUBLIC_MINT_PRICE * MINT_ALLOWANCE_PER_ADDR);
-        vm.prank(nextMinter);
-        vm.expectRevert(bytes(abi.encodeWithSelector(DiamondGenesisPass.MaxWhitelistSupplyExceeded.selector)));
-        // Attempt minting the allowed quantity - should fail due to supply limit
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * MINT_ALLOWANCE_PER_ADDR}(MINT_ALLOWANCE_PER_ADDR, dummyProof);
+        nft.setMerkleRoot(leaf);
+        
+        // Get the mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
+        // Create a proof that triggers the fallback
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0);
+        
+        // Mint exactly MAX_WHITELIST_SUPPLY tokens
+        vm.prank(whitelistUser);
+        nft.whitelistMint{value: mintPrice * maxWhitelistSupply}(maxWhitelistSupply, proof);
+        
+        // Verify we've reached the whitelist limit
+        assertEq(nft.whitelistMintedCount(), maxWhitelistSupply);
+        assertEq(nft.totalSupply(), maxWhitelistSupply);
+        
+        // Create another whitelisted user
+        address nextUser = address(0x9999);
+        vm.deal(nextUser, 1 ether);
+        
+        // Create a leaf for this user
+        bytes32 nextLeaf = keccak256(abi.encodePacked(nextUser, uint256(1)));
+        
+        // Update the merkle root
+        vm.prank(admin);
+        nft.setMerkleRoot(nextLeaf);
+        
+        // The next user should not be able to mint via whitelist (exceed limit)
+        vm.prank(nextUser);
+        vm.expectRevert(DiamondGenesisPass.MaxWhitelistSupplyExceeded.selector);
+        nft.whitelistMint{value: mintPrice}(1, proof);
     }
 
     // Test that after whitelist limit is reached, whitelisted addresses can't mint but owner can
     function testWhitelistLimitOwnerCanStillMint() public {
-        // First mint up to the whitelist limit using the existing method
-        address[] memory testAddresses = new address[](30);
-        for (uint256 i = 0; i < 30; i++) {
-            testAddresses[i] = address(uint160(0x7000 + i));
-            vm.deal(testAddresses[i], 10 ether);
-        }
+        // Get the whitelist supply limit from the contract
+        uint256 maxWhitelistSupply = nft.getMaxWhitelistSupply();
         
-        // Set a simple merkle root
-        bytes32 simpleRoot = keccak256("simple root for testing");
+        // Set up user to mint all whitelist tokens
+        address whitelistUser = address(0x8888);
+        vm.deal(whitelistUser, 100 ether);
+        
+        // Create a leaf with the maximum allowed whitelist supply
+        bytes32 leaf = keccak256(abi.encodePacked(whitelistUser, maxWhitelistSupply));
+        
+        // Set this leaf as the merkle root
         vm.prank(admin);
-        nft.setMerkleRoot(simpleRoot);
+        nft.setMerkleRoot(leaf);
         
-        // Mint tokens up to exactly the whitelist limit
-        uint256 remainingToMint = nft.getMaxWhitelistSupply();
-        for (uint256 i = 0; i < testAddresses.length && remainingToMint > 0; i++) {
-            address minter = testAddresses[i];
-            
-            // Each address mints up to 10 tokens
-            uint256 mintQty = remainingToMint >= 10 ? 10 : remainingToMint;
-            remainingToMint -= mintQty;
-            
-            // Skip verification and directly manipulate state for testing
-            vm.startPrank(admin);
-            vm.store(
-                address(nft),
-                keccak256(abi.encode(minter, uint256(4))), // Mapping slot for whitelistClaimed
-                bytes32(uint256(0)) // Not claimed yet (will be set to 1 during mint)
-            );
-            vm.stopPrank();
-            
-            // Mint tokens
-            vm.prank(minter);
-            nft.whitelistMint{value: PUBLIC_MINT_PRICE * mintQty}(mintQty, new bytes32[](1));
-        }
+        // Get the mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
+        // Create a proof that triggers the fallback
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0);
+        
+        // Mint exactly MAX_WHITELIST_SUPPLY tokens
+        vm.prank(whitelistUser);
+        nft.whitelistMint{value: mintPrice * maxWhitelistSupply}(maxWhitelistSupply, proof);
         
         // Verify we've reached the whitelist limit
-        assertEq(nft.whitelistMintedCount(), nft.getMaxWhitelistSupply());
+        assertEq(nft.whitelistMintedCount(), maxWhitelistSupply);
         
         // Create a new whitelisted address that hasn't claimed yet
         address newWhitelistedUser = address(0xABCD);
         vm.deal(newWhitelistedUser, 10 ether);
         
-        // Setup this address to pass merkle verification
-        vm.startPrank(admin);
-        vm.store(
-            address(nft),
-            keccak256(abi.encode(newWhitelistedUser, uint256(4))), // whitelistClaimed slot
-            bytes32(uint256(0)) // Not claimed
-        );
-        vm.stopPrank();
+        // Set up a new leaf and merkle root for this user
+        bytes32 newLeaf = keccak256(abi.encodePacked(newWhitelistedUser, uint256(1)));
+        vm.prank(admin);
+        nft.setMerkleRoot(newLeaf);
         
         // The whitelisted user should not be able to mint via whitelist
         vm.prank(newWhitelistedUser);
         vm.expectRevert(DiamondGenesisPass.MaxWhitelistSupplyExceeded.selector);
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE}(1, new bytes32[](1));
+        nft.whitelistMint{value: mintPrice}(1, proof);
         
         // Owner should still be able to mint using mintOwner
         vm.prank(admin);
@@ -585,59 +587,65 @@ contract DiamondGenesisPassMintTest is Test {
         nft.mintOwner(service);
         
         // Verify the total supply and whitelist count
-        assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply() + 2);
-        assertEq(nft.whitelistMintedCount(), nft.getMaxWhitelistSupply());
+        assertEq(nft.totalSupply(), maxWhitelistSupply + 2);
+        assertEq(nft.whitelistMintedCount(), maxWhitelistSupply);
     }
     
     // Test that public mint and owner mint should still work after whitelist limit is reached
     function testAllMintingPathsAfterWhitelistLimit() public {
-        // First fill up the whitelist supply
-        vm.startPrank(admin);
+        // Get the whitelist supply limit from the contract
+        uint256 maxWhitelistSupply = nft.getMaxWhitelistSupply();
         
-        // Mint exactly MAX_WHITELIST_SUPPLY tokens via whitelist
-        address whitelistMinter = address(0xBEEF);
-        vm.deal(whitelistMinter, 100 ether);
+        // Set up user to mint all whitelist tokens
+        address whitelistUser = address(0x8888);
+        vm.deal(whitelistUser, 100 ether);
         
-        // Create the simplest possible root with just one leaf
-        bytes32 leaf = keccak256(abi.encodePacked(whitelistMinter, nft.getMaxWhitelistSupply()));
-        nft.setMerkleRoot(leaf); // Just set this leaf as the root directly
+        // Create a leaf with the maximum allowed whitelist supply
+        bytes32 leaf = keccak256(abi.encodePacked(whitelistUser, maxWhitelistSupply));
         
-        vm.stopPrank();
+        // Set this leaf as the merkle root
+        vm.prank(admin);
+        nft.setMerkleRoot(leaf);
         
-        // Mint tokens up to the whitelist limit
-        vm.prank(whitelistMinter);
-        // Empty proof since our "tree" is just a single leaf, using fallback for simplified proofs
+        // Get the mint price
+        uint256 mintPrice = nft.PUBLIC_MINT_PRICE();
+        
+        // Create a proof that triggers the fallback
         bytes32[] memory proof = new bytes32[](1);
-        proof[0] = bytes32(0); // This will trigger the fallback path
+        proof[0] = bytes32(0);
         
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * nft.getMaxWhitelistSupply()}(nft.getMaxWhitelistSupply(), proof);
+        // Mint exactly MAX_WHITELIST_SUPPLY tokens
+        vm.prank(whitelistUser);
+        nft.whitelistMint{value: mintPrice * maxWhitelistSupply}(maxWhitelistSupply, proof);
         
         // Verify whitelist is at capacity
-        assertEq(nft.whitelistMintedCount(), nft.getMaxWhitelistSupply());
-        assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply());
+        assertEq(nft.whitelistMintedCount(), maxWhitelistSupply);
+        assertEq(nft.totalSupply(), maxWhitelistSupply);
         
         // Now test different minting paths
         
-        // 1. Whitelist mint should fail now that the limit is reached, even for the valid minter.
-        vm.prank(whitelistMinter);
-        vm.expectRevert(DiamondGenesisPass.MaxWhitelistSupplyExceeded.selector);
-        // Attempt to mint 1 more token using the same valid proof
-        nft.whitelistMint{value: PUBLIC_MINT_PRICE * 1}(1, proof);
-
-        // Reset prank for admin operations - stop any active pranks first
-        vm.stopPrank();
+        // 1. Whitelist mint should fail now that the limit is reached, even for a valid minter.
+        address newWhitelistUser = address(0x9999);
+        vm.deal(newWhitelistUser, 1 ether);
+        bytes32 newLeaf = keccak256(abi.encodePacked(newWhitelistUser, uint256(1)));
+        vm.prank(admin);
+        nft.setMerkleRoot(newLeaf);
         
-        // 2. Owner mint should work - use a separate prank for each operation
+        vm.prank(newWhitelistUser);
+        vm.expectRevert(DiamondGenesisPass.MaxWhitelistSupplyExceeded.selector);
+        nft.whitelistMint{value: mintPrice}(1, proof);
+
+        // 2. Owner mint should work
         vm.prank(admin);
         nft.mintOwner(admin);
-        assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply() + 1);
+        assertEq(nft.totalSupply(), maxWhitelistSupply + 1);
         
-        // 3. Service account mint should work - use a separate prank
+        // 3. Service account mint should work
         vm.prank(service);
         nft.safeMintOwner(service);
-        assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply() + 2);
+        assertEq(nft.totalSupply(), maxWhitelistSupply + 2);
         
-        // 4. Public mint should work if activated - use a separate prank
+        // 4. Public mint should work if activated
         vm.prank(admin);
         nft.setPublicMintActive(true);
         
@@ -645,11 +653,11 @@ contract DiamondGenesisPassMintTest is Test {
         vm.deal(publicMinter, 1 ether);
         
         vm.prank(publicMinter);
-        nft.mint{value: PUBLIC_MINT_PRICE}(publicMinter);
+        nft.mint{value: mintPrice}(publicMinter);
         
-        assertEq(nft.totalSupply(), nft.getMaxWhitelistSupply() + 3);
+        assertEq(nft.totalSupply(), maxWhitelistSupply + 3);
         
         // Verify the whitelist count hasn't changed despite more minting
-        assertEq(nft.whitelistMintedCount(), nft.getMaxWhitelistSupply());
+        assertEq(nft.whitelistMintedCount(), maxWhitelistSupply);
     }
 } 

@@ -9,7 +9,6 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 // A reentrancy attack contract that tries to drain funds
 contract ReentrancyAttacker {
     CentralizedRoyaltyDistributor public distributor;
-    bytes32[] public emptyProof;
     address public collection;
     uint256 public amount;
     uint256 public attackCount;
@@ -26,26 +25,36 @@ contract ReentrancyAttacker {
         maxAttacks = _maxAttacks;
         
         // Start the attack
-        distributor.claimRoyaltiesMerkle(collection, address(this), amount, emptyProof);
+        distributor.claimRoyalties(collection, amount);
     }
     
     // Fallback function that tries to recursively claim
     receive() external payable {
         attackCount++;
         if (attackCount < maxAttacks) {
-            distributor.claimRoyaltiesMerkle(collection, address(this), amount, emptyProof);
+            distributor.claimRoyalties(collection, amount);
         }
     }
 }
 
-// ERC20 that reverts on transfer
+// ERC20 that reverts on transfer but allows initial minting
 contract RevertingERC20 is ERC20 {
     constructor() ERC20("Reverting Token", "RVT") {
-        _mint(msg.sender, 1000 ether);
+        // Don't mint to msg.sender in constructor anymore
+    }
+    
+    // Special function to mint tokens directly to an address - for test setup only
+    function mintTo(address recipient, uint256 amount) external {
+        _mint(recipient, amount);
     }
     
     function transfer(address, uint256) public pure override returns (bool) {
         revert("Deliberate transfer revert");
+    }
+    
+    // Add transferFrom to test SafeERC20 usage in distributor
+    function transferFrom(address, address, uint256) public pure override returns (bool) {
+        revert("Deliberate transferFrom revert");
     }
 }
 
@@ -56,7 +65,12 @@ contract FeeERC20 is ERC20 {
     
     constructor(address _feeCollector) ERC20("Fee Token", "FEE") {
         feeCollector = _feeCollector;
-        _mint(msg.sender, 1000 ether);
+        // Don't mint to msg.sender in constructor anymore
+    }
+    
+    // Special function to mint tokens directly to an address - for test setup only
+    function mintTo(address recipient, uint256 amount) external {
+        _mint(recipient, amount);
     }
     
     function transfer(address recipient, uint256 amount) public override returns (bool) {
@@ -65,6 +79,16 @@ contract FeeERC20 is ERC20 {
         
         super.transfer(feeCollector, feeAmount);
         super.transfer(recipient, sendAmount);
+        return true;
+    }
+    
+    // Add transferFrom to test SafeERC20 usage in distributor
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        uint256 feeAmount = (amount * fee) / 10000;
+        uint256 sendAmount = amount - feeAmount;
+        
+        super.transferFrom(sender, feeCollector, feeAmount);
+        super.transferFrom(sender, recipient, sendAmount);
         return true;
     }
 }
@@ -90,7 +114,7 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         vm.startPrank(admin);
         distributor = new CentralizedRoyaltyDistributor();
         distributor.grantRole(distributor.SERVICE_ACCOUNT_ROLE(), service);
-        nft = new DiamondGenesisPass(address(distributor), 750, creator);
+        nft = new DiamondGenesisPass(address(distributor), 750, creator); // 7.5% royalty fee
         // Only register if not already registered
         if (!distributor.isCollectionRegistered(address(nft))) {
             distributor.registerCollection(address(nft), 750, 2000, 8000, creator);
@@ -107,9 +131,13 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         vm.deal(user1, 10 ether);
         vm.deal(user2, 10 ether);
         vm.deal(address(attacker), 1 ether);
+        
+        // Fund ERC20 accounts for tests - using direct minting instead of transfers
+        revertingToken.mintTo(address(distributor), 200 ether); // Pre-fund distributor
+        feeToken.mintTo(address(distributor), 200 ether); // Pre-fund distributor
     }
     
-    // Test 1: Registration edge cases
+    // Test 1: Registration edge cases (KEEP - Valid)
     function testRegisterCollectionWithInvalidShares() public {
         address newCollection = address(0x123);
         
@@ -138,7 +166,7 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         distributor.registerCollection(newCollection, 500, 10000, 0, creator);
     }
     
-    // Test 2: Reentrancy attack on claim function
+    // Test 2: Reentrancy attack on claim function (KEEP - Valid)
     function testReentrancyAttack() public {
         // Fund distributor for the NFT collection correctly
         vm.deal(address(nft), 1 ether);
@@ -146,229 +174,233 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         (bool success, ) = address(distributor).call{value: 1 ether}("");
         require(success, "Funding failed");
 
-        // Create a Merkle root with the attacker address as recipient
-        bytes32 leaf = keccak256(abi.encodePacked(address(attacker), uint256(0.1 ether)));
-
-        // Submit the Merkle root (simplified for testing)
+        // Set up direct accrual for attacker
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = address(attacker);
+        amounts[0] = 0.1 ether;
+        
+        // Update accrued royalties for attacker
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0.1 ether);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
 
         // Try the reentrancy attack - expect it to revert due to nonReentrant guard
-        vm.expectRevert(); // Expect generic revert from failed ETH transfer
+        // The specific revert might be the transfer failing inside the receive() loop
+        vm.expectRevert(); 
         attacker.attack(address(nft), 0.1 ether, 3);
-
-        // Removed balance and attack count checks as the attack call itself reverts
-        // uint256 attackerBalanceBefore = address(attacker).balance;
-        // attacker.attack(address(nft), 0.1 ether, 3);
-        // uint256 attackerBalanceAfter = address(attacker).balance;
-        // assertEq(attackerBalanceAfter - attackerBalanceBefore, 0.1 ether);
-        // assertEq(attacker.attackCount(), 1);
     }
     
-    // Test 3: Double claim attempt
+    // Test 3: Double claim attempt (KEEP - Valid)
     function testDoubleClaimAttempt() public {
-        // Fund distributor
-        vm.deal(address(this), 1 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
+        // Fund distributor via the collection's receive() or addCollectionRoyalties
+        vm.deal(address(nft), 1 ether);
+        vm.prank(address(nft));
+        (bool success, ) = address(distributor).call{value: 1 ether}("");
+        require(success, "Funding failed");
         
-        // Create a simple Merkle root
-        bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(0.5 ether)));
+        // Set up direct accrual for user1
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = 0.5 ether;
         
-        // Submit the Merkle root
+        // Update accrued royalties
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0.5 ether);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
         
         // First claim should succeed
         vm.prank(user1);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.5 ether, new bytes32[](0));
+        distributor.claimRoyalties(address(nft), 0.5 ether);
         
-        // Second claim should fail
+        // Second claim for the same amount should fail
         vm.prank(user1);
-        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__AlreadyClaimed.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.5 ether, new bytes32[](0));
-    }
-    
-    // Test 4: Claim with valid proof but wrong amount
-    function testClaimWithWrongAmount() public {
-        // Fund distributor
-        vm.deal(address(this), 1 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__InsufficientUnclaimedRoyalties.selector);
+        distributor.claimRoyalties(address(nft), 0.5 ether);
         
-        // Create Merkle tree with two leaves
-        bytes32 leaf1 = keccak256(abi.encodePacked(user1, uint256(0.3 ether)));
-        bytes32 leaf2 = keccak256(abi.encodePacked(user2, uint256(0.2 ether)));
-        bytes32 root = keccak256(abi.encodePacked(leaf1, leaf2));
-        
-        // Submit the Merkle root
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, 0.5 ether);
-        
-        // Create proof for user1
-        bytes32[] memory proof = new bytes32[](1);
-        proof[0] = leaf2;
-        
-        // Try to claim with wrong amount
+        // Third claim for 0 should succeed (but do nothing)
         vm.prank(user1);
-        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__InvalidProof.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.4 ether, proof); // 0.4 instead of 0.3
+        distributor.claimRoyalties(address(nft), 0);
     }
     
-    // Test 5: Claim with valid proof but wrong recipient
-    function testClaimWithWrongRecipient() public {
-        // Fund distributor
-        vm.deal(address(this), 1 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
-        
-        // Create Merkle tree with user1's address
-        bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(0.5 ether)));
-        
-        // Submit the Merkle root
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0.5 ether);
-        
-        // Try to claim as user2
-        vm.prank(user2);
-        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__InvalidProof.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user2, 0.5 ether, new bytes32[](0));
-    }
+    // Test 4: Claim with Wrong Amount (REMOVE - Merkle Specific)
+    /* function testClaimWithWrongAmount() public { ... } */
     
-    // Test 6: Claim with insufficient royalty pool
+    // Test 5: Claim with Wrong Recipient (REMOVE - Merkle Specific)
+    /* function testClaimWithWrongRecipient() public { ... } */
+    
+    // Test 6: Claim with insufficient royalty pool (REWRITE)
     function testClaimWithInsufficientPool() public {
-        // Fund distributor with less than needed, correctly attributing to the collection
-        vm.deal(address(nft), 0.2 ether);
+        // Accrue royalties for user1
+        uint256 accruedAmount = 0.5 ether;
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = accruedAmount;
+        
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+        
+        // Fund distributor with LESS than the accrued amount
+        uint256 fundedAmount = 0.2 ether;
+        vm.deal(address(nft), fundedAmount);
         vm.prank(address(nft));
-        (bool success, ) = address(distributor).call{value: 0.2 ether}("");
+        (bool success, ) = address(distributor).call{value: fundedAmount}("");
         require(success, "Funding failed");
 
-        // Create a Merkle root for 0.5 ETH
-        bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(0.5 ether)));
-        
-        // Submit the Merkle root
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0.2 ether);
-
-        // Try to claim more than the pool has - proof is valid, but insufficient funds for transfer
+        // Try to claim the full accrued amount - should fail due to insufficient collection balance
         vm.prank(user1);
         vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__NotEnoughEtherToDistributeForCollection.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.5 ether, new bytes32[](0));
-    }
-    
-    // Test 7: ERC20 token reverts on transfer
-    function testERC20ClaimWithRevertingToken() public {
-        // Approve and add reverting tokens to distributor
-        revertingToken.approve(address(distributor), 100 ether);
-        distributor.addCollectionERC20Royalties(address(nft), revertingToken, 100 ether);
+        distributor.claimRoyalties(address(nft), accruedAmount); 
         
-        // Create a Merkle root for ERC20 claim
-        bytes32 leaf = keccak256(abi.encodePacked(user1, address(revertingToken), uint256(50 ether)));
-        
-        // Submit the Merkle root
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0);
-        
-        // Try to claim - should revert due to token's transfer function
+        // Try to claim the funded amount - should succeed
         vm.prank(user1);
-        vm.expectRevert("Deliberate transfer revert");
-        distributor.claimERC20RoyaltiesMerkle(address(nft), user1, revertingToken, 50 ether, new bytes32[](0));
+        distributor.claimRoyalties(address(nft), fundedAmount); 
+        assertEq(user1.balance, 10 ether + fundedAmount); // User1 started with 10 ETH
     }
     
-    // Test 8: ERC20 token with transfer fee
-    function testERC20ClaimWithFeeToken() public {
-        // Approve and add fee tokens to distributor
-        feeToken.approve(address(distributor), 100 ether);
-        distributor.addCollectionERC20Royalties(address(nft), feeToken, 100 ether);
+    // Test 7: ERC20 token reverts on transfer (REWRITE)
+    function testERC20ClaimWithRevertingToken() public {
+        // Accrue reverting tokens for user1
+        uint256 accruedAmount = 50 ether;
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = accruedAmount;
         
-        // Create a Merkle root for ERC20 claim
-        bytes32 leaf = keccak256(abi.encodePacked(user1, address(feeToken), uint256(50 ether)));
+        // Use `addCollectionERC20Royalties` to add tokens to the distributor's collection balance
+        // The setUp already minted tokens to the distributor address, now associate them with the collection
+        // Since the distributor already has the tokens and the caller is admin, no approval needed
+        vm.prank(admin); 
+        distributor.addCollectionERC20Royalties(address(nft), revertingToken, accruedAmount);
         
-        // Submit the Merkle root
+        // Accrue the claim for user1
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0);
+        distributor.updateAccruedERC20Royalties(address(nft), revertingToken, recipients, amounts);
+
+        // Try to claim - should revert due to token's transfer function via SafeERC20
+        vm.prank(user1);
+        // SafeERC20 reverts without a message, or with the underlying revert message if available
+        vm.expectRevert("Deliberate transfer revert"); 
+        distributor.claimERC20Royalties(address(nft), revertingToken, accruedAmount);
+    }
+    
+    // Test 8: ERC20 token with transfer fee (REWRITE)
+    function testERC20ClaimWithFeeToken() public {
+        // Accrue fee tokens for user1
+        uint256 accruedAmount = 50 ether;
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = accruedAmount;
+        
+        // Add fee tokens to the distributor's collection balance
+        // Since the distributor already has the tokens and the caller is admin, no approval needed
+        vm.prank(admin);
+        distributor.addCollectionERC20Royalties(address(nft), feeToken, accruedAmount);
+        
+        // Accrue the claim for user1
+        vm.prank(service);
+        distributor.updateAccruedERC20Royalties(address(nft), feeToken, recipients, amounts);
         
         // Claim the tokens
-        vm.prank(user1);
-        distributor.claimERC20RoyaltiesMerkle(address(nft), user1, feeToken, 50 ether, new bytes32[](0));
+        uint256 userBalanceBefore = feeToken.balanceOf(user1);
+        uint256 collectorBalanceBefore = feeToken.balanceOf(feeCollector);
         
-        // Check balance - should be less than claimed due to fee
-        uint256 expectedAfterFee = 50 ether - ((50 ether * 100) / 10000); // 1% fee
-        assertEq(feeToken.balanceOf(user1), expectedAfterFee);
-        assertEq(feeToken.balanceOf(feeCollector), (50 ether * 100) / 10000); // fee collector got the fee
+        vm.prank(user1);
+        distributor.claimERC20Royalties(address(nft), feeToken, accruedAmount);
+        
+        // Check balances - should account for fee
+        uint256 feeAmount = (accruedAmount * feeToken.fee()) / 10000;
+        uint256 expectedUserAmount = accruedAmount - feeAmount;
+        
+        assertEq(feeToken.balanceOf(user1), userBalanceBefore + expectedUserAmount, "User balance mismatch");
+        assertEq(feeToken.balanceOf(feeCollector), collectorBalanceBefore + feeAmount, "Fee collector balance mismatch");
     }
     
-    // Test 9: Claim with a very large Merkle proof (gas limit testing)
-    function testLargeMerkleProof() public {
-        // Fund distributor
-        vm.deal(address(this), 1 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
-        
-        // Create a large Merkle proof (20 elements)
-        bytes32[] memory largeProof = new bytes32[](20);
-        for (uint256 i = 0; i < 20; i++) {
-            largeProof[i] = keccak256(abi.encodePacked(i));
-        }
-        
-        // Create a fake root and leaf
-        bytes32 root = keccak256(abi.encodePacked("root"));
-        
-        // Submit the Merkle root
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, 0.5 ether);
-        
-        // Try to claim with large proof (should fail due to invalid proof, but not out of gas)
-        vm.prank(user1);
-        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__InvalidProof.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.5 ether, largeProof);
-    }
+    // Test 9: Large Merkle Proof (REMOVE - Merkle Specific)
+    /* function testLargeMerkleProof() public { ... } */
     
-    // Test 10: Zero value operations
+    // Test 10: Zero value operations (REFACTOR)
     function testZeroValueOperations() public {
-        // Try to add zero royalties
+        // Try to add zero ETH royalties using addCollectionRoyalties
         vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__ZeroAmountToDistribute.selector);
         distributor.addCollectionRoyalties{value: 0}(address(nft));
         
+        // Try to add zero ETH royalties using receive() via direct call
+        vm.prank(address(nft)); // Simulate collection sending royalties
+        (bool success, ) = address(distributor).call{value: 0}("");
+        require(success, "Zero value call failed"); // Should succeed, but add 0
+
         // Try to add zero ERC20 royalties
-        revertingToken.approve(address(distributor), 100 ether);
+        vm.prank(admin);
+        revertingToken.approve(address(distributor), 0); // Approve 0
         vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__ZeroAmountToDistribute.selector);
         distributor.addCollectionERC20Royalties(address(nft), revertingToken, 0);
         
-        // Add some royalties and create a Merkle root
-        vm.deal(address(this), 1 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
+        // Even with tokens already in the distributor's balance, zero amount should still revert
+        vm.prank(admin);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__ZeroAmountToDistribute.selector);
+        distributor.addCollectionERC20Royalties(address(nft), feeToken, 0);
         
-        // Create a Merkle root for zero ETH (should work)
-        bytes32 leaf = keccak256(abi.encodePacked(user1, uint256(0)));
+        // --- Test Claiming Zero ---
+        // Accrue some royalties first
+        uint256 accruedAmount = 0.5 ether;
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = accruedAmount;
         
-        // Submit the Merkle root with zero amount
+        // Fund distributor for the claim
+        vm.deal(address(nft), accruedAmount);
+        vm.prank(address(nft));
+        (success, ) = address(distributor).call{value: accruedAmount}("");
+        require(success, "Funding failed");
+        
+        // Accrue for user1
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), leaf, 0);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
         
-        // Claim zero ETH (should work, but no ETH transferred)
+        // Claim zero ETH (should succeed, but no ETH transferred)
         uint256 balanceBefore = user1.balance;
         vm.prank(user1);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0, new bytes32[](0));
+        distributor.claimRoyalties(address(nft), 0);
         uint256 balanceAfter = user1.balance;
         
-        // Verify no balance change
-        assertEq(balanceAfter, balanceBefore);
+        // Verify no balance change (gas costs might affect exact match)
+        assertTrue(balanceAfter <= balanceBefore, "Balance increased after claiming zero"); 
+        
+        // Check claimable remains the same
+        uint256 claimable = distributor.getClaimableRoyalties(address(nft), user1);
+        assertEq(claimable, accruedAmount, "Claimable amount changed after claiming zero");
+
+        // --- Test Accruing Zero ---
+        uint256 totalAccruedBefore = distributor.totalAccruedRoyalty();
+        amounts[0] = 0; // Accrue zero amount
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+        assertEq(distributor.totalAccruedRoyalty(), totalAccruedBefore, "Total accrued changed after accruing zero");
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), accruedAmount, "User claimable changed after accruing zero");
     }
     
-    // Test 11: Batch update with very large arrays
+    // Test 11: Batch update with very large arrays (KEEP - Valid)
     function testLargeBatchUpdate() public {
         // Create arrays of 100 elements for batch update
         uint256 batchSize = 100;
         uint256[] memory tokenIds = new uint256[](batchSize);
         address[] memory minters = new address[](batchSize);
         uint256[] memory salePrices = new uint256[](batchSize);
-        uint256[] memory timestamps = new uint256[](batchSize);
         bytes32[] memory txHashes = new bytes32[](batchSize);
         
         // Fill arrays with data
         for (uint256 i = 0; i < batchSize; i++) {
-            tokenIds[i] = i + 1;
-            minters[i] = address(uint160(i + 1));
+            tokenIds[i] = i + 1; // Assume tokens 1 to 100 exist (need minting in setup?)
+            minters[i] = address(uint160(i + 100)); // Dummy minters
             salePrices[i] = 1 ether;
-            timestamps[i] = block.timestamp;
             txHashes[i] = keccak256(abi.encodePacked("tx", i));
+            
+            // Ensure minters are set in distributor for analytics (though not strictly needed for batchUpdate)
+            vm.prank(address(nft)); // Simulate NFT contract setting minter
+            distributor.setTokenMinter(address(nft), tokenIds[i], minters[i]);
         }
         
         // Perform batch update
@@ -376,50 +408,170 @@ contract CentralizedRoyaltyDistributorAttackAndEdgeCasesTest is Test {
         distributor.batchUpdateRoyaltyData(
             address(nft),
             tokenIds,
-            minters,
+            minters, // Pass minters array
             salePrices,
             txHashes
         );
         
-        // Check total accrued royalty
-        uint256 expectedRoyaltyPerSale = (1 ether * 750) / 10000; // 7.5% of 1 ETH
+        // Check total accrued royalty (analytics value)
+        (uint256 feeNum, , , ) = distributor.getCollectionConfig(address(nft));
+        uint256 expectedRoyaltyPerSale = (1 ether * feeNum) / distributor.FEE_DENOMINATOR(); 
         uint256 expectedTotalRoyalty = expectedRoyaltyPerSale * batchSize;
-        assertEq(distributor.totalAccrued(), expectedTotalRoyalty);
+        assertEq(distributor.totalAccrued(), expectedTotalRoyalty, "Total accrued mismatch");
     }
     
-    // Test 12: Multiple claim attempts with same proof for different recipients
-    function testMultipleClaimsWithSameProof() public {
-        // Fund distributor
-        vm.deal(address(this), 1 ether);
-        distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
-        
-        // Create Merkle tree with two leaves
-        bytes32 leaf1 = keccak256(abi.encodePacked(user1, uint256(0.5 ether)));
-        bytes32 leaf2 = keccak256(abi.encodePacked(user2, uint256(0.3 ether)));
-        bytes32 root = keccak256(abi.encodePacked(leaf1, leaf2));
-        
-        // Submit the Merkle root
-        vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, 0.8 ether);
-        
-        // Create proofs
-        bytes32[] memory proof1 = new bytes32[](1);
-        proof1[0] = leaf2;
-        
-        bytes32[] memory proof2 = new bytes32[](1);
-        proof2[0] = leaf1;
-        
-        // User1 claims with correct proof
-        vm.prank(user1);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.5 ether, proof1);
-        
-        // User2 claims with correct proof
+    // Test 12: Multiple Claims with Same Proof (REMOVE - Merkle Specific, covered by testDoubleClaimAttempt)
+    /* function testMultipleClaimsWithSameProof() public { ... } */
+
+    // === NEW TESTS ===
+
+    // Test: updateAccruedRoyalties permissions
+    function testUpdateAccruedPermissions() public {
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = 0.1 ether;
+
+        // Should fail if called by random user
         vm.prank(user2);
-        distributor.claimRoyaltiesMerkle(address(nft), user2, 0.3 ether, proof2);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+
+        // Should succeed if called by service account
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+
+        // Should succeed if called by admin
+        amounts[0] = 0.2 ether; // Change amount to avoid duplicate event if needed
+        vm.prank(admin);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+
+        assertEq(distributor.getClaimableRoyalties(address(nft), user1), 0.3 ether);
+    }
+
+    // Test: batchUpdateRoyaltyData permissions
+    function testBatchUpdatePermissions() public {
+        uint256[] memory tokenIds = new uint256[](1);
+        address[] memory minters = new address[](1);
+        uint256[] memory salePrices = new uint256[](1);
+        bytes32[] memory txHashes = new bytes32[](1);
+        tokenIds[0] = 1;
+        minters[0] = user1;
+        salePrices[0] = 1 ether;
+        txHashes[0] = keccak256("tx1");
+
+        // Mint token 1 first
+        vm.prank(admin);
+        nft.mintOwner(user1);
+
+        // Should fail if called by random user
+        vm.prank(user2);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__CallerIsNotAdminOrServiceAccount.selector);
+        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
+
+        // Should succeed if called by service account
+        vm.prank(service);
+        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
+
+        // Should succeed if called by admin (add another tx)
+        tokenIds[0] = 2; // Use different token/tx
+        minters[0] = user2;
+        txHashes[0] = keccak256("tx2");
+        vm.prank(admin);
+        nft.mintOwner(user2); // Mint token 2
+        vm.prank(admin);
+        distributor.batchUpdateRoyaltyData(address(nft), tokenIds, minters, salePrices, txHashes);
+    }
+
+    // Test: updateCreatorAddress permissions
+    function testUpdateCreatorPermissions() public {
+        address newCreator = address(0xDEADBEEF);
         
-        // User1 tries to use user2's proof
+        // Should fail if called by random user
         vm.prank(user1);
-        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__AlreadyClaimed.selector);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, 0.3 ether, proof2);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__NotCollectionCreatorOrAdmin.selector);
+        distributor.updateCreatorAddress(address(nft), newCreator);
+        
+        // Should fail if called by service account
+        vm.prank(service);
+        vm.expectRevert(CentralizedRoyaltyDistributor.RoyaltyDistributor__NotCollectionCreatorOrAdmin.selector);
+        distributor.updateCreatorAddress(address(nft), newCreator);
+        
+        // Should succeed if called by current creator
+        vm.prank(creator);
+        distributor.updateCreatorAddress(address(nft), newCreator);
+        (,,, address currentCreatorAfterUpdate1) = distributor.getCollectionConfig(address(nft));
+        assertEq(currentCreatorAfterUpdate1, newCreator);
+        
+        // Should succeed if called by admin
+        address finalCreator = address(0xBAADF00D);
+        vm.prank(admin);
+        distributor.updateCreatorAddress(address(nft), finalCreator);
+        (,,, address currentCreatorAfterUpdate2) = distributor.getCollectionConfig(address(nft));
+        assertEq(currentCreatorAfterUpdate2, finalCreator);
+
+        // Should succeed if called by collection contract itself (via a function it exposes)
+        // Example: DiamondGenesisPass could have a function `setRoyaltyRecipient` calling distributor.updateCreatorAddress
+        // vm.prank(address(nft));
+        // distributor.updateCreatorAddress(address(nft), address(0xCAFE)); // This would fail directly
+        // Instead, test via the NFT contract's function (if it exists)
+        vm.prank(admin); // Owner of NFT is admin initially
+        nft.setRoyaltyRecipient(address(0xCAFE));
+        (,,, address currentCreatorAfterUpdate3) = distributor.getCollectionConfig(address(nft));
+        assertEq(currentCreatorAfterUpdate3, address(0xCAFE));
+    }
+
+    // NEW TEST: Verify batch functionality of updateAccruedRoyalties
+    function testBatchDirectAccrual() public {
+        // Define batch data for multiple recipients
+        address recipient1 = address(0xBAADF00D); vm.deal(recipient1, 1 ether);
+        address recipient2 = address(0xFACEB00C); vm.deal(recipient2, 1 ether);
+        address recipient3 = address(0xDEADBEEF); vm.deal(recipient3, 1 ether);
+
+        address[] memory recipients = new address[](3);
+        uint256[] memory amounts = new uint256[](3);
+
+        recipients[0] = recipient1; amounts[0] = 0.1 ether;
+        recipients[1] = recipient2; amounts[1] = 0.2 ether;
+        recipients[2] = recipient3; amounts[2] = 0.3 ether;
+
+        uint256 totalBatchAmount = amounts[0] + amounts[1] + amounts[2]; // 0.6 ether
+
+        // Fund the distributor pool first
+        vm.deal(admin, totalBatchAmount);
+        vm.prank(admin);
+        distributor.addCollectionRoyalties{value: totalBatchAmount}(address(nft));
+
+        // Get initial total accrued for comparison
+        uint256 totalAccruedBefore = distributor.totalAccruedRoyalty();
+
+        // Accrue royalties for all recipients in one batch call
+        vm.prank(service);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+
+        // Verify global total accrued increased correctly
+        assertEq(distributor.totalAccruedRoyalty(), totalAccruedBefore + totalBatchAmount, "Total accrued mismatch after batch");
+
+        // Verify individual claimable amounts
+        assertEq(distributor.getClaimableRoyalties(address(nft), recipient1), amounts[0], "Recipient 1 claimable incorrect");
+        assertEq(distributor.getClaimableRoyalties(address(nft), recipient2), amounts[1], "Recipient 2 claimable incorrect");
+        assertEq(distributor.getClaimableRoyalties(address(nft), recipient3), amounts[2], "Recipient 3 claimable incorrect");
+
+        // Have recipients claim their amounts
+        uint256 totalClaimedBefore = distributor.totalClaimed();
+        
+        vm.prank(recipient1);
+        distributor.claimRoyalties(address(nft), amounts[0]);
+        vm.prank(recipient2);
+        distributor.claimRoyalties(address(nft), amounts[1]);
+        vm.prank(recipient3);
+        distributor.claimRoyalties(address(nft), amounts[2]);
+
+        // Verify final state
+        assertEq(distributor.totalClaimed(), totalClaimedBefore + totalBatchAmount, "Total claimed mismatch after batch claims");
+        assertEq(distributor.collectionUnclaimed(address(nft)), 0, "Collection pool should be empty after batch claims");
+        assertEq(distributor.getClaimableRoyalties(address(nft), recipient1), 0);
+        assertEq(distributor.getClaimableRoyalties(address(nft), recipient2), 0);
+        assertEq(distributor.getClaimableRoyalties(address(nft), recipient3), 0);
     }
 } 

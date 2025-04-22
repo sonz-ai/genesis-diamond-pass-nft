@@ -57,24 +57,35 @@ contract CentralizedRoyaltyDistributorTest is Test {
         assertEq(minter, user1);
     }
 
-    function _createSingleLeafTree(address recipient, uint256 amount) internal pure returns (bytes32 root, bytes32[] memory proof) {
-        bytes32 leaf = keccak256(abi.encodePacked(recipient, amount));
-        root = leaf;
-        proof = new bytes32[](0);
-    }
-
-    function testSubmitMerkleRootAndClaim() public {
+    function testUpdateAccruedRoyaltiesAndClaim() public {
         // deposit royalties
         vm.deal(address(this), 1 ether);
         distributor.addCollectionRoyalties{value: 1 ether}(address(nft));
-        // create root
+        
+        // Update accrued royalties
         uint256 claimAmount = 0.5 ether;
-        (bytes32 root, bytes32[] memory proof) = _createSingleLeafTree(user1, claimAmount);
+        address[] memory recipients = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        recipients[0] = user1;
+        amounts[0] = claimAmount;
+        
         vm.prank(service);
-        distributor.submitRoyaltyMerkleRoot(address(nft), root, claimAmount);
+        distributor.updateAccruedRoyalties(address(nft), recipients, amounts);
+        
+        // Verify accrued amount
+        uint256 claimable = distributor.getClaimableRoyalties(address(nft), user1);
+        assertEq(claimable, claimAmount);
+        
+        // Claim royalties
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        distributor.claimRoyaltiesMerkle(address(nft), user1, claimAmount, proof);
+        distributor.claimRoyalties(address(nft), claimAmount);
+        
+        // Verify balance increased
         assertEq(user1.balance, 1 ether + claimAmount);
+        
+        // Verify claimed amount is reflected
+        claimable = distributor.getClaimableRoyalties(address(nft), user1);
+        assertEq(claimable, 0);
     }
 } 

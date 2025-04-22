@@ -157,7 +157,7 @@ contract DiamondGenesisPass is
         uint96 royaltyFeeNumerator_, 
         address creator_
     ) 
-    ERC721OpenZeppelin("Diamond Genesis Pass", "DiamondGenesisPass") 
+    ERC721OpenZeppelin("Diamond Genesis Pass Test Beta", "DiamondGenesisPassTestBeta") 
     CentralizedRoyaltyAdapter(royaltyDistributor_, royaltyFeeNumerator_) 
     {
         _creator = creator_; // Store creator for re-registration
@@ -213,13 +213,13 @@ contract DiamondGenesisPass is
         // First check local override
         address minterOverride = _tokenMinterOverrides[tokenId];
         if (minterOverride != address(0)) {
-            if (msg.sender != minterOverride) {
+            if (_msgSender() != minterOverride) {
                 revert NotTokenMinter();
             }
         } else {
             // If no override, check the distributor
             address minter = centralizedDistributor.getMinter(address(this), tokenId);
-            if (msg.sender != minter) {
+            if (_msgSender() != minter) {
                 revert NotTokenMinter();
             }
         }
@@ -235,7 +235,7 @@ contract DiamondGenesisPass is
             revert TokenNotMinted();
         }
         
-        if (msg.sender != ownerOf(tokenId)) {
+        if (_msgSender() != ownerOf(tokenId)) {
             revert NotTokenOwner();
         }
         _;
@@ -366,7 +366,12 @@ contract DiamondGenesisPass is
         
         uint256 firstTokenId = currentSupply + 1;
         for (uint256 i = 0; i < quantity; i++) {
-            _mint(sender, firstTokenId + i); 
+            uint256 tokenId = firstTokenId + i;
+            _mint(sender, tokenId);
+            
+            // Register the minter with the distributor
+            _ensureDistributorRegistration();
+            centralizedDistributor.setTokenMinter(address(this), tokenId, sender);
         }
         
         _mintedCount += quantity; // Optimized count update
@@ -566,7 +571,7 @@ contract DiamondGenesisPass is
      */
     function _requireCallerIsContractOwner() internal view virtual override {
         // Keep Ownable check for MetadataURI compatibility
-        if (msg.sender != owner()) { 
+        if (_msgSender() != owner()) { 
             revert CallerIsNotOwner();
         }
     }
@@ -606,9 +611,9 @@ contract DiamondGenesisPass is
 
     /**
      * @notice Get the total amount of royalties that are currently available to be claimed for this collection
-     * @return The unclaimed royalties amount
+     * @return unclaimedAmount The unclaimed royalties amount
      */
-    function totalUnclaimedRoyalties() external view returns (uint256) {
+    function totalUnclaimedRoyalties() external view override returns (uint256 unclaimedAmount) {
         return centralizedDistributor.collectionUnclaimed(address(this));
     }
 
@@ -885,17 +890,16 @@ contract DiamondGenesisPass is
             delete _tokenBids[tokenId];
         } else {
             // Remove collection bid
-            if (collectionBidIndex != _collectionBids.length - 1) {
-                _collectionBids[collectionBidIndex] = _collectionBids[_collectionBids.length - 1];
+            if (_collectionBids.length > 0) {
+                if (collectionBidIndex < _collectionBids.length - 1) {
+                    _collectionBids[collectionBidIndex] = _collectionBids[_collectionBids.length - 1];
+                }
+                _collectionBids.pop();
             }
-            _collectionBids.pop();
-            
-            // Also clear token-specific bids
-            delete _tokenBids[tokenId];
         }
         
         // Update minter status to the new minter
-        address oldMinter = msg.sender;
+        address oldMinter = _msgSender();
         _tokenMinterOverrides[tokenId] = highestBidder;
         
         // 100% of the payment goes to the contract owner (not to the seller)
@@ -1067,16 +1071,16 @@ contract DiamondGenesisPass is
         }
 
         // Store seller address before any state changes
-        address seller = msg.sender;
+        address seller = _msgSender();
         
         // Calculate royalty amount based on the royalty fee numerator
         uint256 salePrice = highestAmount;
         uint256 royaltyAmount = (salePrice * royaltyFeeNumerator) / FEE_DENOMINATOR;
         uint256 sellerProceeds = salePrice - royaltyAmount;
         
-        // Save bid info - remove from state before making external calls
+        // Remove the winning bid from state before any external calls
         if (useTokenBid) {
-            // Remove token bid by copying the last element to the index position and popping the last element
+            // Remove token bid
             if (_tokenPurchaseBids[tokenId].length > 0) {
                 if (tokenBidIndex < _tokenPurchaseBids[tokenId].length - 1) {
                     _tokenPurchaseBids[tokenId][tokenBidIndex] = _tokenPurchaseBids[tokenId][_tokenPurchaseBids[tokenId].length - 1];
@@ -1093,30 +1097,24 @@ contract DiamondGenesisPass is
             }
         }
         
-        // First approve and transfer the token to the buyer
-        // Make sure the token can be transferred using transferFrom instead of internal _transfer
-        // to ensure compatibility with ERC721C
-        address tokenOwner = ownerOf(tokenId);
-        
-        // The seller is the msg.sender and has already been verified by the onlyTokenOwner modifier
-        
-        // Approve this contract to handle the transfer
-        _approve(address(this), tokenId);
-        
-        // Use safeTransferFrom to ensure safer transfer
-        safeTransferFrom(seller, highestBidder, tokenId);
+        // Transfer the token to the highest bidder
+        _transfer(seller, highestBidder, tokenId);
         
         // Now handle payments
         // 1. Send royalty to the distributor
         (bool royaltySuccess, ) = payable(royaltyDistributor).call{value: royaltyAmount}("");
-        require(royaltySuccess, "Royalty transfer failed");
+        if (!royaltySuccess) {
+            revert("Royalty transfer failed");
+        }
         
         // 2. Send proceeds to seller
         (bool sellerSuccess, ) = payable(seller).call{value: sellerProceeds}("");
-        require(sellerSuccess, "Seller payment failed");
+        if (!sellerSuccess) {
+            revert("Seller payment failed");
+        }
         
-        // 3. Process remaining bids for this token
-        _clearAllTokenBids(tokenId);
+        // 3. Process remaining bids for this token - but only for this specific token
+        _clearTokenSpecificBids(tokenId);
         
         // Emit events
         emit SaleRecorded(address(this), tokenId, salePrice);
@@ -1125,8 +1123,57 @@ contract DiamondGenesisPass is
     }
     
     /**
-     * @dev Helper function to clear all bids for a token
+     * @dev Helper function to clear token-specific bids for a token (not collection-wide bids)
      * @param tokenId The token ID
+     */
+    function _clearTokenSpecificBids(uint256 tokenId) internal {
+        TokenBid[] storage bids = _tokenPurchaseBids[tokenId];
+        uint256 bidCount = bids.length;
+        
+        if (bidCount == 0) {
+            return; // No bids to clear
+        }
+        
+        // Create a temporary array of addresses and amounts to refund
+        // This prevents issues with modifying the array while iterating
+        address[] memory refundAddresses = new address[](bidCount);
+        uint256[] memory refundAmounts = new uint256[](bidCount);
+        uint256 validRefunds = 0;
+        
+        // Collect all valid bids to refund
+        for (uint i = 0; i < bidCount; i++) {
+            address bidder = bids[i].bidder;
+            uint256 amount = bids[i].amount;
+            
+            if (bidder != address(0) && amount > 0) {
+                refundAddresses[validRefunds] = bidder;
+                refundAmounts[validRefunds] = amount;
+                validRefunds++;
+            }
+        }
+        
+        // Clear the bids array first to prevent reentrancy
+        delete _tokenPurchaseBids[tokenId];
+        
+        // Process refunds after clearing state
+        for (uint i = 0; i < validRefunds; i++) {
+            address bidder = refundAddresses[i];
+            uint256 amount = refundAmounts[i];
+            
+            // Transfer funds back to the bidder
+            (bool success, ) = payable(bidder).call{value: amount}("");
+            
+            // Emit event for successful refunds
+            if (success) {
+                emit TokenBidWithdrawn(bidder, tokenId, amount, false);
+            }
+        }
+    }
+    
+    /**
+     * @dev Helper function to clear all bids for a token (including remaining collection-wide bids)
+     * @param tokenId The token ID
+     * @dev This is kept for backward compatibility but is no longer used in acceptHighestTokenBid
      */
     function _clearAllTokenBids(uint256 tokenId) internal {
         TokenBid[] storage bids = _tokenPurchaseBids[tokenId];
