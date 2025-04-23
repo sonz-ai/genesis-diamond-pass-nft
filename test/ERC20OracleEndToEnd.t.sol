@@ -87,6 +87,10 @@ contract OracleEthFlowTest is Test {
     
     // Renamed test function
     function testOracleEthFlow() public {
+        // First, set the trusted oracle address
+        vm.prank(admin);
+        distributor.setTrustedOracleAddress(address(oracle));
+        
         // Step 1: Trigger oracle update (optional, as fulfillment can be called directly by mock)
         vm.roll(block.number + 2); // Advance blocks to pass rate limit
         vm.prank(user1); // Anyone can trigger

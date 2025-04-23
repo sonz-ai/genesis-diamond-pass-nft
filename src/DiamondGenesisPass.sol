@@ -123,6 +123,7 @@ contract DiamondGenesisPass is
     error NoBidsAvailable(); // No bids to accept
     error TokenNotMinted(); // Token doesn't exist
     error TransferFailed(); // ETH transfer failed
+    error SelfBiddingNotAllowed(); // Cannot bid on and accept your own bid
     
     /*───────────────────*/
     /*     ✨ Events      */
@@ -863,53 +864,74 @@ contract DiamondGenesisPass is
     }
     
     /**
-     * @notice Accept the highest bid for a token's minter status
-     * @dev Only callable by the current minter of the token
+     * @notice Accept the highest bid for minter status
+     * @dev Transfers minter status to the highest bidder, and distributes ETH
      * @param tokenId The token ID
      */
     function acceptHighestBid(uint256 tokenId) external nonReentrant onlyTokenMinter(tokenId) {
-        // Check for token-specific bids first
+        // Get the highest bid (token-specific and collection-wide)
         (address tokenBidder, uint256 tokenBidAmount, uint256 tokenBidIndex) = getHighestBid(tokenId, false);
-        
-        // Then check collection-wide bids
         (address collectionBidder, uint256 collectionBidAmount, uint256 collectionBidIndex) = getHighestBid(0, true);
         
-        // Determine the highest bid between token-specific and collection-wide
+        // No bids available
+        if (tokenBidAmount == 0 && collectionBidAmount == 0) {
+            revert NoBidsAvailable();
+        }
+        
+        // Determine which bid to accept
         bool useTokenBid = tokenBidAmount >= collectionBidAmount;
         address highestBidder = useTokenBid ? tokenBidder : collectionBidder;
         uint256 highestAmount = useTokenBid ? tokenBidAmount : collectionBidAmount;
         
-        // Ensure there's a valid bid
-        if (highestBidder == address(0) || highestAmount == 0) {
-            revert NoBidsAvailable();
+        // Check that highest bidder is not the current minter (prevent self-bidding)
+        if (highestBidder == msg.sender) {
+            revert SelfBiddingNotAllowed();
         }
         
-        // Remove the accepted bid and clear all other bids for this token
-        if (useTokenBid) {
-            // Clear all token bids (not just the highest one)
-            delete _tokenBids[tokenId];
-        } else {
-            // Remove collection bid
-            if (_collectionBids.length > 0) {
-                if (collectionBidIndex < _collectionBids.length - 1) {
-                    _collectionBids[collectionBidIndex] = _collectionBids[_collectionBids.length - 1];
-                }
-                _collectionBids.pop();
-            }
-        }
+        // Store original minter
+        address oldMinter = msg.sender;
         
-        // Update minter status to the new minter
-        address oldMinter = _msgSender();
+        // First transfer the minter status to the highest bidder
         _tokenMinterOverrides[tokenId] = highestBidder;
         
-        // 100% of the payment goes to the contract owner (not to the seller)
-        (bool success, ) = owner().call{value: highestAmount}("");
+        // Update the minter in the centralized distributor 
+        try centralizedDistributor.setTokenMinter(address(this), tokenId, highestBidder) {
+            // No need to do anything here, the function succeeded
+        } catch {
+            // If updating the minter in the distributor fails, we still want to proceed with
+            // the bid acceptance, as the override in this contract will take precedence
+        }
+        
+        // All royalties go to contract owner for minter status trades
+        // Send the entire amount to the contract owner
+        (bool success, ) = payable(owner()).call{value: highestAmount}("");
         if (!success) {
             revert TransferFailed();
         }
         
-        emit BidAccepted(oldMinter, highestBidder, tokenId, highestAmount);
+        // Remove the accepted bid
+        if (useTokenBid) {
+            // Remove the accepted bid from token-specific bids
+            if (tokenBidIndex < _tokenBids[tokenId].length - 1) {
+                _tokenBids[tokenId][tokenBidIndex] = _tokenBids[tokenId][_tokenBids[tokenId].length - 1];
+            }
+            delete _tokenBids[tokenId];
+        } else {
+            // Remove the accepted bid from collection-wide bids
+            if (collectionBidIndex < _collectionBids.length - 1) {
+                _collectionBids[collectionBidIndex] = _collectionBids[_collectionBids.length - 1];
+            }
+            _collectionBids.pop();
+        }
+        
+        // Refund all other bids (excluding the accepted bid)
+        _refundAllOtherBids(tokenId, highestBidder);
+        
+        // Emit assignment event
         emit MinterStatusAssigned(tokenId, highestBidder, oldMinter);
+        
+        // Emit bid acceptance event
+        emit BidAccepted(oldMinter, highestBidder, tokenId, highestAmount);
     }
 
     // ================== TOKEN TRADING FUNCTIONS ==================
@@ -1049,46 +1071,58 @@ contract DiamondGenesisPass is
     }
     
     /**
-     * @notice Accept the highest token purchase bid for a token
-     * @dev Only callable by the current owner of the token
+     * @notice Accept the highest token purchase bid for a token to sell it
+     * @dev Transfers the token to the highest bidder and sends the ETH to the seller
      * @param tokenId The token ID
      */
     function acceptHighestTokenBid(uint256 tokenId) external nonReentrant onlyTokenOwner(tokenId) {
-        // Check for token-specific bids first
+        // Get the highest bid (token-specific and collection-wide)
         (address tokenBidder, uint256 tokenBidAmount, uint256 tokenBidIndex) = getHighestTokenBid(tokenId, false);
-        
-        // Then check collection-wide bids
         (address collectionBidder, uint256 collectionBidAmount, uint256 collectionBidIndex) = getHighestTokenBid(0, true);
         
-        // Determine the highest bid between token-specific and collection-wide
+        // No bids available
+        if (tokenBidAmount == 0 && collectionBidAmount == 0) {
+            revert NoBidsAvailable();
+        }
+        
+        // Determine which bid to accept
         bool useTokenBid = tokenBidAmount >= collectionBidAmount;
         address highestBidder = useTokenBid ? tokenBidder : collectionBidder;
         uint256 highestAmount = useTokenBid ? tokenBidAmount : collectionBidAmount;
         
-        // Ensure there's a valid bid
-        if (highestBidder == address(0) || highestAmount == 0) {
-            revert NoBidsAvailable();
+        // Check that highest bidder is not the token owner (prevent self-bidding)
+        if (highestBidder == msg.sender) {
+            revert SelfBiddingNotAllowed();
         }
-
-        // Store seller address before any state changes
-        address seller = _msgSender();
         
-        // Calculate royalty amount based on the royalty fee numerator
-        uint256 salePrice = highestAmount;
-        uint256 royaltyAmount = (salePrice * royaltyFeeNumerator) / FEE_DENOMINATOR;
-        uint256 sellerProceeds = salePrice - royaltyAmount;
+        // Store seller for event emission and refund handling
+        address seller = msg.sender;
         
-        // Remove the winning bid from state before any external calls
+        // Handle royalty distribution
+        uint256 royaltyAmount = (highestAmount * royaltyFeeNumerator) / FEE_DENOMINATOR; // calculate royalty
+        uint256 sellerProceeds = highestAmount - royaltyAmount; // calculate proceeds after royalty
+        
+        // Send royalty to the distributor directly
+        (bool sentRoyalty, ) = payable(royaltyDistributor).call{value: royaltyAmount}("");
+        if (!sentRoyalty) {
+            revert TransferFailed();
+        }
+        
+        // Send seller proceeds
+        (bool sentProceeds, ) = payable(seller).call{value: sellerProceeds}("");
+        if (!sentProceeds) {
+            revert TransferFailed();
+        }
+        
+        // Update bid arrays
         if (useTokenBid) {
-            // Remove token bid
-            if (_tokenPurchaseBids[tokenId].length > 0) {
-                if (tokenBidIndex < _tokenPurchaseBids[tokenId].length - 1) {
-                    _tokenPurchaseBids[tokenId][tokenBidIndex] = _tokenPurchaseBids[tokenId][_tokenPurchaseBids[tokenId].length - 1];
-                }
-                _tokenPurchaseBids[tokenId].pop();
+            // Remove the accepted bid from the token-specific bids
+            if (tokenBidIndex < _tokenPurchaseBids[tokenId].length - 1) {
+                _tokenPurchaseBids[tokenId][tokenBidIndex] = _tokenPurchaseBids[tokenId][_tokenPurchaseBids[tokenId].length - 1];
             }
+            _tokenPurchaseBids[tokenId].pop();
         } else {
-            // Remove collection bid
+            // Remove the accepted bid from the collection-wide bids
             if (_collectionTokenBids.length > 0) {
                 if (collectionBidIndex < _collectionTokenBids.length - 1) {
                     _collectionTokenBids[collectionBidIndex] = _collectionTokenBids[_collectionTokenBids.length - 1];
@@ -1097,29 +1131,24 @@ contract DiamondGenesisPass is
             }
         }
         
-        // Transfer the token to the highest bidder
-        _transfer(seller, highestBidder, tokenId);
+        // Refund all other bids for this token (excluding the accepted bid)
+        _refundAllOtherTokenBids(tokenId, highestBidder);
         
-        // Now handle payments
-        // 1. Send royalty to the distributor
-        (bool royaltySuccess, ) = payable(royaltyDistributor).call{value: royaltyAmount}("");
-        if (!royaltySuccess) {
-            revert("Royalty transfer failed");
+        // Transfer token to highest bidder
+        _safeTransfer(seller, highestBidder, tokenId, "");
+        
+        // Record the sale in our own contract for analytics and emit event
+        try this.recordSale(tokenId, highestAmount) {
+            // Successfully recorded the sale
+        } catch {
+            // If recording fails, continue with the sale but don't emit the event
         }
         
-        // 2. Send proceeds to seller
-        (bool sellerSuccess, ) = payable(seller).call{value: sellerProceeds}("");
-        if (!sellerSuccess) {
-            revert("Seller payment failed");
-        }
+        // Update token holder in the distributor for analytics
+        try centralizedDistributor.updateTokenHolder(address(this), tokenId, highestBidder) {} catch {}
         
-        // 3. Process remaining bids for this token - but only for this specific token
-        _clearTokenSpecificBids(tokenId);
-        
-        // Emit events
-        emit SaleRecorded(address(this), tokenId, salePrice);
+        // Emit acceptance event
         emit TokenBidAccepted(seller, highestBidder, tokenId, highestAmount);
-        emit RoyaltySent(tokenId, royaltyAmount);
     }
     
     /**
@@ -1219,5 +1248,67 @@ contract DiamondGenesisPass is
             // If refund fails, we still continue with other refunds
             // This is an acceptable risk as we've already deleted the bids from state
         }
+    }
+
+    /**
+     * @notice Refund all other bidders for a specific token (excluding the winner)
+     * @dev Called when a bid is accepted to return ETH to other bidders
+     * @param tokenId The token ID
+     * @param winningBidder The address of the winning bidder who shouldn't be refunded
+     */
+    function _refundAllOtherTokenBids(uint256 tokenId, address winningBidder) internal {
+        // Refund token-specific bidders
+        TokenBid[] storage bids = _tokenPurchaseBids[tokenId];
+        for (uint256 i = 0; i < bids.length; i++) {
+            address bidder = bids[i].bidder;
+            uint256 amount = bids[i].amount;
+            
+            // Skip the winning bidder as they've already had their bid accepted
+            if (bidder != winningBidder && bidder != address(0) && amount > 0) {
+                // Reset bid data before making external call
+                bids[i].amount = 0;
+                
+                // Send refund
+                (bool success, ) = payable(bidder).call{value: amount}("");
+                if (success) {
+                    emit TokenBidWithdrawn(bidder, tokenId, amount, false);
+                }
+                // Even if transfer fails, we continue processing other refunds
+            }
+        }
+        
+        // Clear the array after processing all bids
+        delete _tokenPurchaseBids[tokenId];
+    }
+
+    /**
+     * @notice Refund all other bidders for a minter status (excluding the winner)
+     * @dev Called when a bid is accepted to return ETH to other bidders
+     * @param tokenId The token ID
+     * @param winningBidder The address of the winning bidder who shouldn't be refunded
+     */
+    function _refundAllOtherBids(uint256 tokenId, address winningBidder) internal {
+        // Refund token-specific bidders
+        Bid[] storage bids = _tokenBids[tokenId];
+        for (uint256 i = 0; i < bids.length; i++) {
+            address bidder = bids[i].bidder;
+            uint256 amount = bids[i].amount;
+            
+            // Skip the winning bidder as they've already had their bid accepted
+            if (bidder != winningBidder && bidder != address(0) && amount > 0) {
+                // Reset bid data before making external call
+                bids[i].amount = 0;
+                
+                // Send refund
+                (bool success, ) = payable(bidder).call{value: amount}("");
+                if (success) {
+                    emit BidWithdrawn(bidder, tokenId, amount, false);
+                }
+                // Even if transfer fails, we continue processing other refunds
+            }
+        }
+        
+        // Clear the array after processing all bids
+        // Note: This is already done in acceptHighestBid with "delete _tokenBids[tokenId]"
     }
 }

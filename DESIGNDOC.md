@@ -159,6 +159,64 @@ Our solution uses a three-contract system with refined access control and clearl
 *   **Administrative Dashboard:** A UI for the contract owner to monitor transfers, add/remove service accounts, update the royalty recipient, and manage the distribution system.
 *   **User Claim Interface:** A UI for minters and creators/royalty recipients to check their earned royalties and claim them.
 
+**7.1 Chainlink Oracle Integration Architecture**
+
+The system uses an event-driven architecture for oracle integration that can be deployed in phases:
+
+1. **Initial Deployment (Without Chainlink):**
+   * Deploy `CentralizedRoyaltyDistributor` and `DiamondGenesisPass` contracts
+   * The `updateRoyaltyDataViaOracle` function emits events but has no immediate effect
+   * Service accounts can still update royalties directly with `updateAccruedRoyalties`
+
+2. **Chainlink Integration (Later Phase):**
+   * Deploy `ChainlinkOracleIntegration` contract pointing to the `CentralizedRoyaltyDistributor`
+   * Set up `trustedOracleAddress` in the distributor
+   * Configure Chainlink parameters (router, DON ID, subscription ID)
+   * Set up JavaScript source code for Chainlink Functions
+
+3. **End-to-End Oracle Flow:**
+   ```
+   ┌───────────────┐         ┌──────────────────────────┐         ┌───────────────────────┐
+   │  Any User     │ ─────▶ │ CentralizedRoyalty       │ ─────▶ │ Off-Chain Listener     │
+   │ (Public Call) │         │ Distributor              │         │                       │
+   └───────────────┘         └──────────────────────────┘         └───────────────────────┘
+          │                           │                                      │
+          │                           │                                      │
+          │                           ▼                                      ▼
+          │                  ┌──────────────────┐                 ┌───────────────────────┐
+          │                  │ Rate-Limited     │                 │ ChainlinkOracle       │
+          │                  │ Event Emission   │                 │ Integration Contract  │
+          │                  └──────────────────┘                 └───────────────────────┘
+          │                                                                 │
+          │                                                                 │
+          │                                                                 ▼
+          │                                                       ┌───────────────────────┐
+          │                                                       │ Chainlink Functions   │
+          │                                                       │ (Off-Chain Processing)│
+          │                                                       └───────────────────────┘
+          │                                                                 │
+          │                                                                 │
+          ▼                                                                 ▼
+   ┌───────────────┐         ┌──────────────────────────┐         ┌───────────────────────┐
+   │  Royalty      │ ◀────── │ fulfillRoyaltyData       │ ◀────── │ Oracle Response       │
+   │  Recipients   │         │ (Trusted Oracle Only)    │         │ (Processed Data)      │
+   └───────────────┘         └──────────────────────────┘         └───────────────────────┘
+   ```
+
+4. **Security Features:**
+   * Only the trusted oracle address can call `fulfillRoyaltyData`
+   * Rate limiting prevents excessive updates (configurable per collection)
+   * Off-chain listener can be a dedicated service or run by the contract owner
+   * Chainlink Functions provides cryptographic verification of data
+   * Admin can always override or update oracle configuration
+
+5. **Deployment Flexibility:**
+   * Contracts can be deployed and operate normally without immediate Chainlink integration
+   * Oracle integration can be added later when needed, without disrupting existing functionality
+   * Service accounts can still directly update royalties if needed
+
+This phased approach allows immediate deployment while reserving the option to add automated Chainlink-based updates later.
+
 **8. On-Chain Analytics**
 
 *   **On-Chain Metrics (Totals Only):**
@@ -292,11 +350,53 @@ Our solution uses a three-contract system with refined access control and clearl
 
 *   **Oracle Rate Limiting:**
     ```solidity
+    // Public function that can be called by anyone
     function updateRoyaltyDataViaOracle(address collection) external {
-        // Rate limiting check
-        require(block.number >= _lastOracleUpdateBlock[collection] + _oracleUpdateMinBlockInterval[collection]);
+        // Check collection is registered
+        if (!_collectionConfigs[collection].registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+        
+        // Rate limiting check - the only protection to prevent abuse
+        uint256 minInterval = _oracleUpdateMinBlockInterval[collection];
+        if (block.number < _lastOracleUpdateBlock[collection] + minInterval) {
+            revert RoyaltyDistributor__OracleUpdateTooFrequent();
+        }
+        
+        // Update last call block
         _lastOracleUpdateBlock[collection] = block.number;
-        // Trigger Chainlink oracle call
+        
+        // Emit an event for the off-chain listener to detect and trigger the oracle
+        emit OracleUpdateRequested(collection, _collectionRoyaltyData[collection].lastSyncedBlock, block.number);
+    }
+    ```
+
+*   **Oracle Response Handling:**
+    ```solidity
+    // Called only by the trusted oracle address
+    function fulfillRoyaltyData(
+        bytes32 requestId,
+        address collection,
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) external {
+        // Ensure the caller is the trusted oracle address
+        if (msg.sender != trustedOracleAddress && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert RoyaltyDistributor__CallerIsNotTrustedOracle();
+        }
+
+        // Validate the inputs
+        if (!_collectionConfigs[collection].registered) {
+            revert RoyaltyDistributor__CollectionNotRegistered();
+        }
+        require(recipients.length == amounts.length, "Arrays must have the same length");
+
+        // Update accrued royalties
+        bytes32[] memory emptyHashes = new bytes32[](recipients.length);
+        _updateAccruedRoyaltiesInternal(collection, recipients, amounts, emptyHashes);
+        
+        // Emit completion event
+        emit OracleRoyaltyDataFulfilled(collection, requestId);
     }
     ```
 
@@ -312,10 +412,20 @@ Our solution uses a three-contract system with refined access control and clearl
     *   Complete the ERC20 royalty claiming functionality (already present).
     *   Ensure ERC20 tracking and accrual process is robust (`updateAccruedERC20Royalties`).
 *   **Multiple Collection Management:** Enhance the admin dashboard to manage multiple collections efficiently from a single interface.
-*   **Oracle Service Completion:**
-    *   Implement the Chainlink oracle adapter.
-    *   Complete the `fulfillRoyaltyData` function to securely process oracle responses **by calling `updateAccruedRoyalties` or `updateAccruedERC20Royalties` with the data provided by the oracle.** It should *not* perform royalty calculations itself but rather relay the results from the trusted off-chain service via the oracle.
-    *   Add secure oracle node communication (e.g., restricting `fulfillRoyaltyData` caller).
+*   **Oracle Service Implementation:**
+    *   The system is designed to allow deploying the contracts first and configuring Chainlink integration later.
+    *   A separate `ChainlinkOracleIntegration` contract connects the CentralizedRoyaltyDistributor with Chainlink Functions.
+    *   The `updateRoyaltyDataViaOracle` function is public and can be called by anyone, with rate limiting as the only protection to prevent abuse.
+    *   To complete the integration:
+        *   Deploy the `ChainlinkOracleIntegration` contract pointing to the `CentralizedRoyaltyDistributor`.
+        *   Set the trusted oracle address in the distributor via `setTrustedOracleAddress`.
+        *   Configure the Chainlink router, DON ID, and subscription ID via `configureChainlink`.
+        *   Set the JavaScript source code for Chainlink Functions via `setSource`.
+        *   Implement an off-chain listener for `OracleUpdateRequested` events that triggers Chainlink Functions requests.
+    *   Security measures:
+        *   Only the trusted oracle address can call `fulfillRoyaltyData`.
+        *   Rate limiting prevents excessive LINK token costs.
+        *   Access control ensures only authorized addresses can configure the oracle integration.
 *   **Transaction Indexing:** Implement more sophisticated indexing methods to quickly locate missing price data for efficient batch updates.
 *   **Testing and Auditing:** Comprehensive testing (including the updated Oracle flow) and security audit before full production deployment.
 

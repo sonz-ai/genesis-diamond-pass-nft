@@ -44,6 +44,7 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     error RoyaltyDistributor__InvalidBidAmount(); // New error for bid marketplace
     error RoyaltyDistributor__TransferFailed(); // New error for failed transfers
     error RoyaltyDistributor__InsufficientUnclaimedRoyalties(); // New error for insufficient unclaimed royalties
+    error RoyaltyDistributor__CallerIsNotTrustedOracle(); // New error for oracle functions
 
     struct CollectionConfig {
         uint256 royaltyFeeNumerator;
@@ -175,6 +176,14 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
 
     // NEW: Add a mapping to track which transaction hashes have been processed globally
     mapping(bytes32 => bool) private _globalProcessedTransactions; // txHash => bool
+
+    // Oracle address that is allowed to call fulfillRoyaltyData
+    address public trustedOracleAddress;
+
+    // New event for oracle address updates
+    event TrustedOracleAddressSet(address indexed oldAddress, address indexed newAddress);
+    event OracleUpdateRequested(address indexed collection, uint256 fromBlock, uint256 toBlock);
+    event OracleRoyaltyDataFulfilled(address indexed collection, bytes32 requestId);
 
     /**
      * @notice Modifier to ensure the caller is the registered collection contract
@@ -859,53 +868,49 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
         // Update last call block
         _lastOracleUpdateBlock[collection] = block.number;
         
-        // This is where you would make the Chainlink oracle call
-        // Example (commented out as it would need the Chainlink infrastructure):
-        /*
-        Chainlink.Request memory req = buildChainlinkRequest(
-            jobId,
-            address(this),
-            this.fulfillRoyaltyData.selector
+        // Emit event for the off-chain listener to detect and trigger the oracle
+        emit OracleUpdateRequested(
+            collection, 
+            _collectionRoyaltyData[collection].lastSyncedBlock, 
+            block.number
         );
-        req.add("collection", Chainlink.addressToString(collection));
-        req.add("fromBlock", Chainlink.uintToString(_collectionRoyaltyData[collection].lastSyncedBlock));
-        sendOperatorRequest(req, oracleFee);
-        */
     }
     
     /**
      * @notice Chainlink callback function for oracle royalty data updates
-     * @dev Would be called by the Chainlink node after processing updateRoyaltyDataViaOracle.
-     *      This function now expects processed data (recipients and amounts) and calls updateAccruedRoyalties.
-     *      It should be restricted to the Chainlink oracle node in a production environment.
-     * @param _requestId The Chainlink request ID
+     * @dev Called by the Chainlink node after processing updateRoyaltyDataViaOracle.
+     *      This function expects processed data (recipients and amounts) and calls updateAccruedRoyalties.
+     *      It is restricted to the trusted oracle address in a production environment.
+     * @param requestId The Chainlink request ID
      * @param collection The collection address
      * @param recipients Array of recipient addresses who earned royalties
      * @param amounts Array of royalty amounts earned by each recipient
      */
     function fulfillRoyaltyData(
-        bytes32 _requestId,
+        bytes32 requestId,
         address collection,
         address[] calldata recipients,
         uint256[] calldata amounts
-    ) external /* recordChainlinkFulfillment(_requestId) */ {
-        // TODO: Implement proper access control - only allow trusted Oracle node
-        // require(msg.sender == trustedOracleNode, "Caller is not the trusted oracle");
+    ) external {
+        // Ensure the caller is the trusted oracle address or an admin
+        if (msg.sender != trustedOracleAddress && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert RoyaltyDistributor__CallerIsNotTrustedOracle();
+        }
 
         // Check collection is registered
         if (!_collectionConfigs[collection].registered) {
             revert RoyaltyDistributor__CollectionNotRegistered();
         }
 
-        // Validate arrays have the same length (already done in updateAccruedRoyalties, but good practice here too)
+        // Validate arrays have the same length
         require(recipients.length == amounts.length, "Arrays must have the same length");
 
-        // Call updateAccruedRoyalties directly - this is to match the test expectations
+        // Call updateAccruedRoyalties directly
         bytes32[] memory emptyHashes = new bytes32[](recipients.length);
         _updateAccruedRoyaltiesInternal(collection, recipients, amounts, emptyHashes);
 
-        // Optional: Could emit an event here indicating Oracle fulfillment
-        // emit OracleRoyaltyDataFulfilled(collection, _requestId);
+        // Emit event indicating Oracle fulfillment
+        emit OracleRoyaltyDataFulfilled(collection, requestId);
     }
 
     /**
@@ -1170,5 +1175,16 @@ contract CentralizedRoyaltyDistributor is ERC165, ReentrancyGuard, AccessControl
     function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, AccessControl) returns (bool) {
         // Includes ERC165 and IAccessControl
         return super.supportsInterface(interfaceId);
+    }
+
+    /**
+     * @notice Set the trusted oracle address that can call fulfillRoyaltyData
+     * @dev Only callable by admin
+     * @param oracleAddress The oracle address to trust
+     */
+    function setTrustedOracleAddress(address oracleAddress) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        address oldAddress = trustedOracleAddress;
+        trustedOracleAddress = oracleAddress;
+        emit TrustedOracleAddressSet(oldAddress, oracleAddress);
     }
 }
