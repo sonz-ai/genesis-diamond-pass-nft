@@ -158,7 +158,7 @@ contract DiamondGenesisPass is
         uint96 royaltyFeeNumerator_, 
         address creator_
     ) 
-    ERC721OpenZeppelin("Diamond Genesis Pass Test Beta", "DiamondGenesisPassTestBeta") 
+    ERC721OpenZeppelin("Sonzai Diamond Genesis Pass", "SonzaiGenesis") 
     CentralizedRoyaltyAdapter(royaltyDistributor_, royaltyFeeNumerator_) 
     {
         _creator = creator_; // Store creator for re-registration
@@ -346,11 +346,6 @@ contract DiamondGenesisPass is
         
         bytes32 leaf = keccak256(abi.encodePacked(sender, quantity));
         bool ok = MerkleProof.verify(merkleProof, merkleRoot, leaf);
-
-        // fallback for simplified proofs (proof == [0x0])
-        if (!ok && (merkleProof.length == 1 && merkleProof[0] == bytes32(0))) {
-            ok = true;
-        }
         if (!ok) revert InvalidMerkleProof();
 
         uint256 currentSupply = _mintedCount;
